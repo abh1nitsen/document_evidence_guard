@@ -251,6 +251,8 @@ def local_answer(
         "local_budget_exhausted",
         "model_timeout",
         "transport_or_invalid_response",
+        "invalid_model_json",
+        "invalid_verifier_result",
     } or reason.startswith("http_")
     trace.activity(
         "router",

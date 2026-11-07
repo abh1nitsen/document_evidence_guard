@@ -121,7 +121,8 @@ def test_live_fixture_counts_calls_and_prices_a_matched_baseline(tmp_path, monke
     assert cost(None) is None
 
 
-def test_activity_is_emitted_before_model_work_and_timeout_is_distinct(tmp_path):
+@pytest.mark.parametrize("failure", ["model_timeout", "invalid_model_json"])
+def test_activity_is_emitted_before_model_work_and_failure_is_distinct(tmp_path, failure):
     observed = []
 
     class TimeoutModel:
@@ -130,7 +131,7 @@ def test_activity_is_emitted_before_model_work_and_timeout_is_distinct(tmp_path)
         def run(self, instruction, payload, timeout):
             assert observed[-1]["kind"] == "activity"
             assert observed[-1]["status"] == "running"
-            raise ModelError("model_timeout")
+            raise ModelError(failure)
 
     trace = Trace(tmp_path, "confidential_local", on_event=observed.append)
     result = local_answer(
@@ -141,7 +142,7 @@ def test_activity_is_emitted_before_model_work_and_timeout_is_distinct(tmp_path)
         2,
     )
     assert result["route"] == "local_error"
-    assert result["reason"] == "model_timeout"
+    assert result["reason"] == failure
     assert any(event.get("status") == "error" for event in observed)
     assert all(event["trace_id"] == trace.id for event in observed)
 

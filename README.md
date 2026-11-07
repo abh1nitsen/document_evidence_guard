@@ -54,6 +54,18 @@ model. Selecting an earlier run shows its last recorded state for each role.
 Activity explanations come from explicit workflow decisions and validation results.
 The events stream to the browser as they are persisted in the external database.
 Model and time-limit failures have a separate local-error outcome.
+
+For a definition question, the harness first matches the report's glossary
+expansion to a numbered definition heading. A match returns that complete source
+paragraph with its citation, using no model calls. Other questions use
+schema-constrained local model responses with page IDs limited to the supplied
+evidence. Output truncation is reported separately, and each model step has a
+25-second cap within the overall question budget.
+
+The model-based semantic checker remains experimental. The generator and checker
+share a model and can make correlated mistakes. Exact glossary definitions use
+deterministic source matching, while broader interpretations need representative
+evaluation before they can be relied on.
 The synthetic demo runs offline by default. To show the live synthetic demo
 button, start with `--enable-live-demo` and set `GROQ_API_KEY` in the server's
 environment. That button submits only the built-in fictional examples.

@@ -23,6 +23,21 @@ def terms(value: str) -> set[str]:
     return set(re.findall(r"\w+(?:\.\d+)*", value.casefold())) - STOP
 
 
+def definition_target(question: str) -> str | None:
+    match = re.search(
+        r"\bwhat\s+(?:is\s+(?:the\s+)?([a-z][a-z0-9-]{1,15})|"
+        r"([a-z][a-z0-9-]{1,15})\s+is)\s*(?:[?,.!]|$)|"
+        r"\b(?:define|explain)\s+(?:the\s+)?([a-z][a-z0-9-]{1,15})"
+        r"\s*(?:[?,.!]|$)|"
+        r"\bwhat\s+does\s+([a-z][a-z0-9-]{1,15})\s+(?:mean|stand for)\b",
+        question,
+        re.IGNORECASE,
+    )
+    return (
+        next((part.lower() for part in match.groups() if part), None) if match else None
+    )
+
+
 @dataclass(frozen=True)
 class Page:
     number: int
@@ -36,14 +51,78 @@ class Index:
         self.words = {page.number: terms(page.text) for page in pages}
         self.frequency = Counter(word for words in self.words.values() for word in words)
 
+    def expansion(self, target: str) -> str | None:
+        for page in self.pages:
+            for line in page.text.splitlines():
+                match = re.fullmatch(
+                    rf"\s*{re.escape(target)}\s{{2,}}([A-Za-z][A-Za-z -]{{3,90}})\s*",
+                    line,
+                    re.IGNORECASE,
+                )
+                if match:
+                    return match[1].strip()
+        return None
+
+    def definition(self, question: str) -> dict | None:
+        """Resolve a glossary term and matching definition heading without generation."""
+        target = definition_target(question)
+        expansion = self.expansion(target) if target else None
+        if not expansion:
+            return None
+        for page in self.pages:
+            for paragraph in re.split(r"\n\s*\n", page.text):
+                lines = paragraph.strip().splitlines()
+                if len(lines) < 2:
+                    continue
+                heading = re.sub(r"^\d+(?:\.\d+)+\s+", "", lines[0].strip())
+                if heading == lines[0].strip():
+                    continue
+                if not (
+                    expansion.casefold() in heading.casefold()
+                    and target in terms(heading)
+                ):
+                    continue
+                body = " ".join(" ".join(lines[1:]).split())
+                if len(body) > 1400 or not re.search(
+                    rf"\b{re.escape(target)}\s+(?:is|means)\b", body, re.IGNORECASE
+                ):
+                    continue
+                return {
+                    "page": page.number,
+                    "text": f"{expansion} ({target.upper()}). {body}",
+                    "quote": " ".join(paragraph.split()),
+                }
+        return None
+
     def fetch(self, query: str, limit: int = 3) -> list[Page]:
         words = terms(query)
+        target = definition_target(query)
+        expansion = self.expansion(target) if target else None
+        if expansion:
+            words = terms(expansion) | {target}
+
+        def definition_bonus(page: Page) -> float:
+            if not target:
+                return 0
+            flat = " ".join(page.text.split()).lower()
+            direct = bool(
+                re.search(rf"\b{re.escape(target)}\)?\s+(?:is|means|stands for)\b", flat)
+            )
+            heading = any(
+                re.search(r"^\s*\d+(?:\.\d+)+\s+", line)
+                and target in terms(line)
+                and len(line.strip()) < 110
+                for line in page.text.splitlines()
+            )
+            return 10 * direct + 16 * heading
+
         scores = [
             (
                 sum(
                     math.log1p(len(self.pages) / self.frequency[word])
                     for word in sorted(words & self.words[page.number])
-                ),
+                )
+                + definition_bonus(page),
                 page,
             )
             for page in self.pages
@@ -65,6 +144,9 @@ class Index:
     def excerpts(self, pages: list[Page], question: str) -> list[Page]:
         """Select short, overlapping text windows while retaining source page IDs."""
         words = terms(question)
+        target = definition_target(question)
+        if target:
+            words = {target}
         excerpts = []
         for page in pages:
             lines = page.text.splitlines()
@@ -72,6 +154,23 @@ class Index:
                 " ".join(" ".join(lines[i : i + 4]).split())
                 for i in range(0, len(lines), 2)
             ]
+            if target:
+                paragraphs = re.split(r"\n\s*\n", page.text)
+                headings = [
+                    paragraph
+                    for paragraph in paragraphs
+                    if paragraph.strip()
+                    and target in terms(paragraph.strip().splitlines()[0])
+                    and re.match(r"\d+(?:\.\d+)+\s+", paragraph.strip())
+                ]
+                definitions = [
+                    " ".join(paragraph.split())
+                    for paragraph in headings or paragraphs
+                    if re.search(rf"\b{re.escape(target)}\b", paragraph, re.IGNORECASE)
+                    and len(" ".join(paragraph.split())) <= 1400
+                ]
+                if definitions:
+                    windows = definitions
             if not windows:
                 continue
             best = max(
@@ -82,10 +181,30 @@ class Index:
                         for word in sorted(words & terms(window) & self.frequency.keys())
                     )
                     - (5 if "Source:" in window else 0)
+                    + (
+                        12
+                        if target
+                        and re.search(
+                            rf"^\d+(?:\.\d+)+\s+[^.]{{0,100}}\b{re.escape(target)}\b",
+                            window,
+                            re.IGNORECASE,
+                        )
+                        else 0
+                    )
+                    + (
+                        8
+                        if target
+                        and re.search(
+                            rf"\b{re.escape(target)}\)?\s+(?:is|means|stands for)\b",
+                            window,
+                            re.IGNORECASE,
+                        )
+                        else 0
+                    )
                 ),
             )
             if best:
-                excerpts.append(Page(page.number, best[:750]))
+                excerpts.append(Page(page.number, best[: 1400 if target else 750]))
         return excerpts
 
 

@@ -1,11 +1,13 @@
 import json
+from io import BytesIO
 
 import pytest
 
 from evidence_guard.cli import outside_repository
 from evidence_guard.demo import run_demo
-from evidence_guard.evidence import Index, Page
+from evidence_guard.evidence import Index, Page, definition_target
 from evidence_guard.models import ChatResult, LocalModel, ModelError
+from evidence_guard.models import chat as model_chat
 from evidence_guard.telemetry import Trace, cost, summarize
 from evidence_guard.workflow import anchored_claims, local_answer
 
@@ -35,12 +37,84 @@ def test_fabricated_number_fails_even_with_real_page():
     assert Index(source, "synthetic").fetch("31.25")[0].number == 4
 
 
+def test_truncated_json_is_reported_as_a_generation_limit(monkeypatch):
+    class Opener:
+        def open(self, request, timeout):
+            return BytesIO(
+                json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "finish_reason": "length",
+                                "message": {"content": '{"claims":['},
+                            }
+                        ],
+                    }
+                ).encode()
+            )
+
+    monkeypatch.setattr("evidence_guard.models.build_opener", lambda *args: Opener())
+    with pytest.raises(ModelError, match="model_output_truncated"):
+        model_chat("http://127.0.0.1:1/v1/chat/completions", "test", [], 1)
+
+
+def test_conversational_definition_finds_complete_definition_before_broad_mentions():
+    glossary = Page(1, "Abbreviations\n ABC    Asset Balance Code")
+    broad = Page(2, "ABC appears in several charts. This page can tell you some context.")
+    definition = Page(
+        4,
+        "1.2 Scope\nABC is used throughout this project.\n\n"
+        "1.3.1 Asset Balance Code ABC\n"
+        "The ABC is a synthetic rating from 0 to 50 that measures asset balance.",
+    )
+    index = Index([glossary, broad, definition], "synthetic")
+    question = "i dont know what abc is, can you tell me"
+    assert index.fetch(question)[0].number == 4
+    excerpt = index.excerpts([definition], question)[0].text
+    assert "rating from 0 to 50" in excerpt
+    assert excerpt.startswith("1.3.1")
+    assert definition_target("What is the whole-video mean score?") is None
+    assert definition_target("What does ABC mean?") == "abc"
+
+
+def test_explicit_definition_uses_source_without_a_model_call(tmp_path):
+    class NoModel:
+        model = "must-not-be-called"
+
+        def run(self, *args, **kwargs):
+            pytest.fail("An exact source definition should not invoke a model")
+
+    index = Index(
+        [
+            Page(1, "Glossary\n ABC    Asset Balance Code"),
+            Page(
+                4,
+                "1.3.1 Asset Balance Code ABC\n"
+                "ABC is a synthetic rating from 0 to 50. It requires field review.",
+            ),
+        ],
+        "synthetic",
+    )
+    trace = Trace(tmp_path, "confidential_local")
+    result = local_answer(
+        "i dont know what abc is, can you tell me",
+        index,
+        NoModel(),
+        trace,
+        2,
+    )
+    assert result["route"] == "answer_local"
+    assert result["claims"][0]["page"] == 4
+    assert "requires field review" in result["claims"][0]["text"]
+    assert trace.events[-1]["reason"] == "exact_source_definition"
+
+
 def test_local_loop_can_recover_with_targeted_fetch(tmp_path):
     class Model:
         model = "fake"
         drafted = 0
 
-        def run(self, instruction, payload, timeout):
+        def run(self, instruction, payload, timeout, schema=None):
             if "requirements:" in instruction:
                 return {"requirements": ["exception"]}
             if "supported:" in instruction:
@@ -128,7 +202,7 @@ def test_activity_is_emitted_before_model_work_and_failure_is_distinct(tmp_path,
     class TimeoutModel:
         model = "test-local"
 
-        def run(self, instruction, payload, timeout):
+        def run(self, instruction, payload, timeout, schema=None):
             assert observed[-1]["kind"] == "activity"
             assert observed[-1]["status"] == "running"
             raise ModelError(failure)

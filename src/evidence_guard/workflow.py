@@ -3,7 +3,7 @@
 import re
 from time import perf_counter
 
-from .evidence import Index, Page
+from .evidence import Index, Page, definition_target
 from .models import LocalModel, ModelError
 from .telemetry import Trace
 
@@ -13,7 +13,8 @@ DRAFT = (
     "Return JSON {claims:[{text:string,page:integer}], gaps:[string]}. "
     "Cite the page of the supplied excerpt. Give the shortest direct answer. "
     "Include only claims required by the question. Use one claim for a single lookup. "
-    "List missing material facts in gaps, or use [] when none are missing."
+    "List only facts absent from the pages in gaps. Never repeat the user's "
+    "question as a gap. When the pages define the requested term, use gaps=[]."
 )
 VERIFY = (
     "Check the proposed claims against the evidence and the question. "
@@ -40,6 +41,52 @@ STAGES = {
         "Test support and completeness before releasing an answer.",
     ),
 }
+
+
+def output_schema(stage: str, payload: dict) -> dict:
+    if stage == "plan":
+        properties = {
+            "requirements": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {"type": "string", "maxLength": 120},
+            }
+        }
+    elif stage == "draft":
+        properties = {
+            "claims": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "minLength": 1, "maxLength": 300},
+                        "page": {
+                            "type": "integer",
+                            "enum": [page["page"] for page in payload["pages"]],
+                        },
+                    },
+                    "required": ["text", "page"],
+                    "additionalProperties": False,
+                },
+            },
+            "gaps": {
+                "type": "array",
+                "maxItems": 2,
+                "items": {"type": "string", "maxLength": 120},
+            },
+        }
+    else:
+        properties = {
+            "supported": {"type": "boolean"},
+            "complete": {"type": "boolean"},
+        }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(properties),
+        "additionalProperties": False,
+    }
 
 
 def numbers(value: str) -> set[str]:
@@ -72,6 +119,80 @@ def local_answer(
     question: str, index: Index, model: LocalModel, trace: Trace, budget: float
 ) -> dict:
     deadline = perf_counter() + budget
+    target = definition_target(question)
+    if target:
+        start = perf_counter()
+        trace.activity(
+            "retriever",
+            "running",
+            "Look up the glossary definition",
+            "An explicit definition can be answered directly from the source.",
+        )
+        definition = index.definition(question)
+        trace.log(
+            "fetch",
+            start,
+            attempt=1,
+            strategy="glossary_definition",
+            pages=[definition["page"]] if definition else [],
+            new_pages=[definition["page"]] if definition else [],
+        )
+        trace.activity(
+            "retriever",
+            "completed",
+            "Definition lookup complete",
+            "Matched the glossary expansion to a definition heading."
+            if definition
+            else "No exact glossary and definition match was available.",
+            pages=[definition["page"]] if definition else [],
+        )
+        if definition:
+            trace.activity(
+                "planner",
+                "completed",
+                "Select a source lookup",
+                "The question asks for a term explicitly defined in this document.",
+            )
+            trace.activity(
+                "context",
+                "completed",
+                "Load the complete definition paragraph",
+                "Preserve the scope and qualifiers of the source definition.",
+                pages=[definition["page"]],
+            )
+            trace.activity(
+                "writer",
+                "completed",
+                "Return the source definition",
+                "Copy the definition and its glossary expansion without generation.",
+            )
+            trace.activity(
+                "verifier",
+                "completed",
+                "Verify the exact source match",
+                "The glossary expansion, heading and paragraph agree on the term.",
+                verification="deterministic_glossary_and_heading",
+            )
+            trace.log("first_verified", pages=[definition["page"]])
+            trace.activity(
+                "router",
+                "completed",
+                "Release the cited definition",
+                "The exact source lookup answered the question locally.",
+            )
+            trace.log("route", decision="skip", reason="exact_source_definition")
+            return {
+                "route": "answer_local",
+                "claims": [definition],
+                "verification": "deterministic_glossary_and_heading",
+            }
+        question = f"What is {target.upper()}?"
+        trace.activity(
+            "planner",
+            "completed",
+            "Normalize the definition question",
+            "Remove conversational wording and preserve the requested term.",
+        )
 
     def run(stage: str, instruction: str, payload: dict) -> dict:
         start = perf_counter()
@@ -81,7 +202,12 @@ def local_answer(
         role, action, why = STAGES[stage]
         trace.activity(role, "running", action, why, model=model.model)
         try:
-            result = model.run(instruction, payload, left)
+            result = model.run(
+                instruction,
+                payload,
+                min(left, 25),
+                schema=output_schema(stage, payload),
+            )
         except ModelError as exc:
             trace.activity(
                 role,
@@ -253,6 +379,7 @@ def local_answer(
         "transport_or_invalid_response",
         "invalid_model_json",
         "invalid_verifier_result",
+        "model_output_truncated",
     } or reason.startswith("http_")
     trace.activity(
         "router",

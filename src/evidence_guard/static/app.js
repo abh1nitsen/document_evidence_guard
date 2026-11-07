@@ -20,6 +20,7 @@ const routeLabels = {
   running: ["Running locally", "local"],
 };
 const reasons = {
+  exact_source_definition: "The report's glossary and definition heading matched. No model call was needed.",
   local_verified: "The local evidence checks passed.",
   missing_source_fact: "The source does not contain the requested fact.",
   cross_section_interpretation_unresolved: "The cross-section interpretation remained open.",

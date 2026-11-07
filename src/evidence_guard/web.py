@@ -17,9 +17,7 @@ ASSETS = {
 }
 
 
-def serve(
-    port: int, ask: Callable[[str], dict], data_dir: Path, enable_live: bool
-) -> None:
+def serve(port: int, ask: Callable[..., dict], data_dir: Path, enable_live: bool) -> None:
     if not 1 <= port <= 65535:
         raise ValueError("Port must be between 1 and 65535.")
     authority = f"127.0.0.1:{port}"
@@ -53,6 +51,35 @@ def serve(
 
         def reply(self, status: int, value) -> None:
             self.send(status, json.dumps(value).encode("utf-8"), "application/json")
+
+        def stream_search(self, question: str) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            connected = True
+
+            def emit(value):
+                nonlocal connected
+                if connected:
+                    try:
+                        self.wfile.write((json.dumps(value) + "\n").encode("utf-8"))
+                        self.wfile.flush()
+                    except OSError:
+                        connected = False
+
+            try:
+                result = ask(
+                    question,
+                    on_event=lambda event: emit({"type": "event", "event": event}),
+                )
+            except Exception:
+                emit({"type": "error", "error": "Run failed. Check the local model."})
+            else:
+                emit({"type": "result", "result": result})
+            self.close_connection = True
 
         def do_GET(self):
             if self.headers.get("Host") != authority:
@@ -101,7 +128,8 @@ def serve(
                             400, {"error": "Enter a question up to 1500 characters."}
                         )
                         return
-                    result = ask(question)
+                    self.stream_search(question)
+                    return
                 elif self.path == "/api/demo":
                     live = payload.get("live") is True
                     if live and not live_enabled:

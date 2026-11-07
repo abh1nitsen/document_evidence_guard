@@ -38,6 +38,14 @@
       </div>
       <p id="status" role="status" aria-live="polite" hidden></p>
     </section>
+    <section class="panel activity-panel" aria-labelledby="activity-title">
+      <div class="panel-head">
+        <div><p class="eyebrow">LIVE WORKFLOW</p><h2 id="activity-title">Agent activity</h2></div>
+        <span id="activity-state" class="badge">Ready</span>
+      </div>
+      <p class="activity-note">Roles run sequentially using the local model and tools. Each card shows the recorded action and its operational reason.</p>
+      <div id="agents" class="agents"></div>
+    </section>
     <section class="metrics" aria-label="Routes in this tab">
       <div class="metric"><span>Runs this tab</span><strong id="total">0</strong></div>
       <div class="metric"><span>Answered locally</span><strong id="local">0</strong></div>

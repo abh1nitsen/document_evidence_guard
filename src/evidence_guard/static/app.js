@@ -3,6 +3,11 @@
 const byId = (id) => document.getElementById(id);
 const runs = [];
 let selected = null;
+let activeRun = null;
+const roleNames = {
+  planner: "Planner", retriever: "Retriever", context: "Context",
+  writer: "Writer", verifier: "Verifier", router: "Router",
+};
 const routeLabels = {
   answer_local: ["Answered locally", "local"],
   answer_frontier: ["Answered via Groq", "frontier"],
@@ -11,6 +16,8 @@ const routeLabels = {
   insufficient_evidence: ["Insufficient evidence", "open"],
   provider_error: ["Groq failed", "open"],
   frontier_unverified: ["Groq answer withheld", "open"],
+  local_error: ["Local run failed", "open"],
+  running: ["Running locally", "local"],
 };
 const reasons = {
   local_verified: "The local evidence checks passed.",
@@ -43,6 +50,7 @@ function describe(event) {
   const duration = Number.isFinite(event.duration_ms)
     ? ` · took ${milliseconds(event.duration_ms)}` : "";
   switch (event.kind) {
+    case "activity": return `${roleNames[event.role] || event.role} · ${event.action} · ${event.reason}`;
     case "index_load": return `Report index ${event.cache_hit ? "reused" : "built"}${duration}`;
     case "fetch": return `Fetch ${event.attempt}${pages}${duration}`;
     case "local_model": return `Local model · ${plain(event.stage)}${duration}`;
@@ -71,15 +79,49 @@ function describe(event) {
   }
 }
 
+function drawAgents(run) {
+  const container = byId("agents");
+  container.replaceChildren();
+  byId("activity-state").textContent = !run ? "Ready"
+    : run.running ? "Live" : "Recorded run";
+  for (const [role, label] of Object.entries(roleNames)) {
+    const events = (run?.events || []).filter((event) => event.kind === "activity" && event.role === role);
+    const last = events.at(-1);
+    let state = last?.status || (run && !run.running ? "Not used" : "Waiting");
+    if (state === "running" && !run?.running) state = "Interrupted";
+    const card = element("div", "", `agent ${state}`);
+    const heading = element("div", "", "agent-head");
+    heading.append(element("strong", label), element("span", plain(state), `badge ${state}`));
+    card.append(heading);
+    card.append(element("p", last?.action || (
+      run?.case ? "Scripted synthetic fixture" : "Waiting for this role's turn."
+    )));
+    card.append(element("p", last?.reason || (
+      run?.case ? "This demo records routing events without executing each model role."
+        : "The controller schedules this role when its input is ready."
+    ), "why"));
+    if (last?.pages?.length) card.append(element("p", `Pages ${last.pages.join(", ")}`, "why"));
+    if (last) {
+      let timing = `Updated at ${milliseconds(last.elapsed_ms)}`;
+      if (state === "running" && run?.startedAt) {
+        timing = `Working for ${milliseconds(Math.max(0, performance.now() - run.startedAt - last.elapsed_ms))}`;
+      }
+      card.append(element("p", timing, "elapsed"));
+    }
+    container.append(card);
+  }
+}
+
 function showRun(run) {
   selected = run.trace_id;
+  drawAgents(run);
   const panel = byId("result");
   panel.classList.remove("empty");
   panel.replaceChildren(element("p", run.question, "answer"));
   setBadge(byId("route-badge"), run);
   const total = eventOf(run, "finish");
   const lane = run.case ? "Synthetic demo" : "Confidential report";
-  panel.append(element("p", `${lane} · ${milliseconds(total.elapsed_ms)} total`, "summary"));
+  panel.append(element("p", `${lane} · ${total ? milliseconds(total.elapsed_ms) + " total" : "Run in progress"}`, "summary"));
   if (run.claims?.length) {
     panel.append(element("h3", "Evidence"));
     for (const claim of run.claims) {
@@ -88,7 +130,7 @@ function showRun(run) {
       source.append(element("summary", `PDF page ${claim.page}`), element("blockquote", claim.quote));
       panel.append(source);
     }
-  } else if (!run.case) {
+  } else if (!run.case && !run.running) {
     panel.append(element("p", "The local run could not verify an answer.", "summary"));
   }
   if (run.reason) panel.append(element("p", `Stop reason · ${plain(run.reason)}`, "summary"));
@@ -138,25 +180,77 @@ async function request(path, payload, message) {
   status.classList.remove("error");
   status.textContent = message;
   buttons.forEach((button) => { button.disabled = true; });
+  let pending = null;
   try {
     const response = await fetch(path, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(payload),
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Run failed.");
-    const newRuns = Array.isArray(data) ? data : [{...data, question: payload.question}];
-    runs.unshift(...newRuns);
-    showRun(newRuns.find((run) => ["would_call", "answer_frontier"].includes(run.route)) || newRuns[0]);
-    status.textContent = Array.isArray(data) ? "Demo routes added to history." : "Search complete.";
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || "Run failed.");
+    }
+    if (path === "/api/search") {
+      pending = {
+        question: payload.question, route: "running", events: [],
+        trace_id: "pending", running: true, startedAt: performance.now(),
+      };
+      activeRun = pending;
+      runs.unshift(pending);
+      showRun(pending);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finished = false;
+      function consume(line) {
+        if (!line.trim()) return;
+        const item = JSON.parse(line);
+        if (item.type === "error") throw new Error(item.error);
+        if (item.type === "event") {
+          pending.trace_id = item.event.trace_id;
+          pending.events.push(item.event);
+        } else if (item.type === "result") {
+          Object.assign(pending, item.result, {running: false});
+          finished = true;
+        }
+        showRun(pending);
+      }
+      while (true) {
+        const {value, done} = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+        for (const line of lines) consume(line);
+        if (done) break;
+      }
+      if (buffer.trim()) consume(buffer);
+      if (!finished) throw new Error("The local connection ended before the run finished.");
+      status.textContent = "Search complete.";
+    } else {
+      const data = await response.json();
+      runs.unshift(...data);
+      showRun(data.find((run) => ["would_call", "answer_frontier"].includes(run.route)) || data[0]);
+      status.textContent = "Demo routes added to history.";
+    }
   } catch (error) {
+    if (pending) {
+      pending.running = false;
+      pending.route = "local_error";
+      showRun(pending);
+    }
     status.textContent = error.message || "Could not connect to the local server.";
     status.classList.add("error");
   } finally {
+    activeRun = null;
     buttons.forEach((button) => { button.disabled = false; });
   }
 }
+
+setInterval(() => {
+  if (activeRun && selected === activeRun.trace_id) drawAgents(activeRun);
+}, 1000);
+drawAgents(null);
 
 byId("search-form").addEventListener("submit", (event) => {
   event.preventDefault();

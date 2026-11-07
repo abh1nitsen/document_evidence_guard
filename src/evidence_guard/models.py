@@ -43,8 +43,8 @@ def chat(
         "messages": messages,
         "temperature": 0,
         "response_format": {"type": "json_object"},
-        "max_completion_tokens": 768 if key else 640,
     }
+    body["max_completion_tokens" if key else "max_tokens"] = 768 if key else 640
     if key:
         body["reasoning_effort"] = "low"
     headers = {
@@ -67,6 +67,8 @@ def chat(
         return ChatResult(content, value.get("usage"), value.get("id"))
     except HTTPError as exc:
         raise ModelError(f"http_{exc.code}") from None
+    except TimeoutError:
+        raise ModelError("model_timeout") from None
     except (URLError, OSError, ValueError, KeyError, TypeError, IndexError):
         raise ModelError("transport_or_invalid_response") from None
 

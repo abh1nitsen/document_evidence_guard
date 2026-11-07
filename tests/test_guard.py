@@ -5,7 +5,7 @@ import pytest
 from evidence_guard.cli import outside_repository
 from evidence_guard.demo import run_demo
 from evidence_guard.evidence import Index, Page
-from evidence_guard.models import ChatResult, LocalModel
+from evidence_guard.models import ChatResult, LocalModel, ModelError
 from evidence_guard.telemetry import Trace, cost, summarize
 from evidence_guard.workflow import anchored_claims, local_answer
 
@@ -119,6 +119,31 @@ def test_live_fixture_counts_calls_and_prices_a_matched_baseline(tmp_path, monke
     )
     assert report["projection"]["api_savings_usd"] == pytest.approx(87.0)
     assert cost(None) is None
+
+
+def test_activity_is_emitted_before_model_work_and_timeout_is_distinct(tmp_path):
+    observed = []
+
+    class TimeoutModel:
+        model = "test-local"
+
+        def run(self, instruction, payload, timeout):
+            assert observed[-1]["kind"] == "activity"
+            assert observed[-1]["status"] == "running"
+            raise ModelError("model_timeout")
+
+    trace = Trace(tmp_path, "confidential_local", on_event=observed.append)
+    result = local_answer(
+        "Explain the sample.",
+        Index([Page(1, "A sample definition.")], "test"),
+        TimeoutModel(),
+        trace,
+        2,
+    )
+    assert result["route"] == "local_error"
+    assert result["reason"] == "model_timeout"
+    assert any(event.get("status") == "error" for event in observed)
+    assert all(event["trace_id"] == trace.id for event in observed)
 
 
 def test_offline_demo_has_no_network_attempts(tmp_path, monkeypatch):

@@ -23,6 +23,23 @@ VERIFY = (
     "if the claims answer the whole question. "
     "Return JSON {supported:boolean, complete:boolean}."
 )
+STAGES = {
+    "plan": (
+        "planner",
+        "Identify evidence requirements",
+        "Choose what the question needs before searching.",
+    ),
+    "draft": (
+        "writer",
+        "Draft a cited answer",
+        "Use the selected excerpts to answer the question.",
+    ),
+    "verify": (
+        "verifier",
+        "Check the draft against its sources",
+        "Test support and completeness before releasing an answer.",
+    ),
+}
 
 
 def numbers(value: str) -> set[str]:
@@ -61,8 +78,28 @@ def local_answer(
         left = deadline - start
         if left <= 0:
             raise ModelError("local_budget_exhausted")
+        role, action, why = STAGES[stage]
+        trace.activity(role, "running", action, why, model=model.model)
         try:
-            return model.run(instruction, payload, left)
+            result = model.run(instruction, payload, left)
+        except ModelError as exc:
+            trace.activity(
+                role,
+                "error",
+                "Model step failed",
+                str(exc),
+                model=model.model,
+            )
+            raise
+        else:
+            trace.activity(
+                role,
+                "completed",
+                "Model response received",
+                "The response is ready for the harness checks.",
+                model=model.model,
+            )
+            return result
         finally:
             trace.log("local_model", start, stage=stage, model=model.model)
 
@@ -90,6 +127,18 @@ def local_answer(
             reason = "local_budget_exhausted"
             break
         start = perf_counter()
+        strategy_reason = {
+            "question": "Find pages matching the original question.",
+            "requirements": "Try the planner's requirements after the first pass.",
+            "adjacent": "Inspect nearby pages for definitions and continued evidence.",
+        }[strategy]
+        trace.activity(
+            "retriever",
+            "running",
+            f"Fetch attempt {attempt}",
+            strategy_reason,
+            strategy=strategy,
+        )
         known = {page.number for page in pages}
         if strategy == "adjacent":
             candidates = index.adjacent(pages)
@@ -107,6 +156,13 @@ def local_answer(
             pages=[page.number for page in candidates],
             new_pages=[page.number for page in added],
         )
+        trace.activity(
+            "retriever",
+            "completed",
+            f"Fetch attempt {attempt} complete",
+            "New pages were found." if added else "This search added no new pages.",
+            pages=[page.number for page in added],
+        )
         if not added:
             continue
         trace.log(
@@ -114,6 +170,13 @@ def local_answer(
             pages=[p.number for p in visible],
             omitted_pages=max(0, len(pages) - len(visible)),
             context_unit="overlapping_layout_excerpt",
+        )
+        trace.activity(
+            "context",
+            "completed",
+            "Assemble source excerpts",
+            "Keep the most relevant local excerpts within the model context limit.",
+            pages=[p.number for p in visible],
         )
         payload = {
             "question": question,
@@ -125,24 +188,56 @@ def local_answer(
             claims = anchored_claims(proposal, visible)
             reason = "invalid_or_missing_citations"
             if not claims:
+                trace.activity(
+                    "verifier",
+                    "blocked",
+                    "Citation checks failed",
+                    "The draft had missing citations or unsupported numeric values.",
+                )
                 continue
             verdict = run("verify", VERIFY, {"question": question, "claims": claims})
         except ModelError as exc:
             reason = str(exc)
             trace.log("local_issue", code=reason)
-            if reason in {"local_budget_exhausted", "transport_or_invalid_response"}:
+            if reason in {
+                "local_budget_exhausted",
+                "model_timeout",
+                "transport_or_invalid_response",
+            }:
                 break
             continue
         supported = verdict.get("supported")
         if type(supported) is not bool:
             reason = "invalid_verifier_result"
+            trace.activity(
+                "verifier",
+                "blocked",
+                "Verifier contract failed",
+                "The verification response did not contain a boolean support result.",
+            )
             continue
+        trace.activity(
+            "verifier",
+            "completed" if supported else "blocked",
+            "Evidence checks passed" if supported else "Evidence checks remain open",
+            "The claims are supported by their excerpts."
+            if supported
+            else "The draft did not pass the semantic support check.",
+            supported=supported,
+            complete=verdict.get("complete") is True,
+        )
         accepted = claims if supported else []
         if accepted and not verified:
             trace.log("first_verified", pages=sorted({c["page"] for c in accepted}))
         if len(accepted) >= len(verified):
             verified = accepted
         if supported and verdict.get("complete") is True and proposal.get("gaps") == []:
+            trace.activity(
+                "router",
+                "completed",
+                "Release the local answer",
+                "Support, completeness, and citation checks passed. Skip Groq.",
+            )
             trace.log("route", decision="skip", reason="local_verified")
             return {"route": "answer_local", "claims": claims}
         reason = "material_claims_unverified"
@@ -152,8 +247,27 @@ def local_answer(
         reason="confidential_document_local_only",
         local_stop_reason=reason,
     )
+    failed = reason in {
+        "local_budget_exhausted",
+        "model_timeout",
+        "transport_or_invalid_response",
+    } or reason.startswith("http_")
+    trace.activity(
+        "router",
+        "completed",
+        "Return the current local outcome",
+        "Report processing is local-only. "
+        + (
+            "A model or time-limit failure stopped this run."
+            if failed
+            else "The current evidence checks could not close the question."
+        ),
+        local_stop_reason=reason,
+    )
     return {
-        "route": "partial" if verified else "insufficient_evidence",
+        "route": "partial"
+        if verified
+        else ("local_error" if failed else "insufficient_evidence"),
         "reason": reason,
         "claims": verified,
     }

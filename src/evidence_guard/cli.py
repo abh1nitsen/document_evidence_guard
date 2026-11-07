@@ -58,13 +58,19 @@ def main() -> None:
             if not math.isfinite(args.seconds) or args.seconds <= 0:
                 raise ValueError("Local seconds must be finite and positive.")
 
-            def ask_pdf(question: str) -> dict:
+            def ask_pdf(question: str, on_event=None) -> dict:
                 question = question.strip()
                 if not 1 <= len(question) <= 1500:
                     raise ValueError("Question must have 1 to 1500 characters.")
-                trace = Trace(data_dir, "confidential_local")
+                trace = Trace(data_dir, "confidential_local", on_event=on_event)
                 trace.log("start", parser="pypdf_layout", model=model.model)
                 start = perf_counter()
+                trace.activity(
+                    "context",
+                    "running",
+                    "Load the report index",
+                    "Resolve the active document and its source pages.",
+                )
                 index, hit = load_pdf(pdf, data_dir)
                 trace.log(
                     "index_load",
@@ -72,6 +78,13 @@ def main() -> None:
                     cache_hit=hit,
                     pages=len(index.pages),
                     document_sha256=index.fingerprint,
+                )
+                trace.activity(
+                    "context",
+                    "completed",
+                    "Source pages ready",
+                    "The local index is available for retrieval.",
+                    pages_total=len(index.pages),
                 )
                 answer = local_answer(question, index, model, trace, args.seconds)
                 trace.log("finish", route=answer["route"])

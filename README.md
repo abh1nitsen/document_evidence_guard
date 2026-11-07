@@ -47,6 +47,13 @@ Open [the local console](http://127.0.0.1:8787/). Ask a question and select its
 entry in Route history to inspect the answer, source excerpt, fetch timings,
 and the reason for calling or skipping Groq. The question list lives in the
 current tab. The external SQLite database keeps the metadata after the tab closes.
+Agent activity updates during a search. Planner, retriever, context, writer,
+verifier and router cards show the action, status, operational reason, evidence
+page IDs and elapsed time. These are sequential workflow roles sharing the local
+model. Selecting an earlier run shows its last recorded state for each role.
+Activity explanations come from explicit workflow decisions and validation results.
+The events stream to the browser as they are persisted in the external database.
+Model and time-limit failures have a separate local-error outcome.
 The synthetic demo runs offline by default. To show the live synthetic demo
 button, start with `--enable-live-demo` and set `GROQ_API_KEY` in the server's
 environment. That button submits only the built-in fictional examples.

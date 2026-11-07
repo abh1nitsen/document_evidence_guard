@@ -3,6 +3,7 @@
 import json
 import math
 import sqlite3
+from collections.abc import Callable
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,12 +37,15 @@ def cost(usage: dict | None) -> float | None:
 
 
 class Trace:
-    def __init__(self, data_dir: Path, mode: str):
+    def __init__(
+        self, data_dir: Path, mode: str, on_event: Callable[[dict], None] | None = None
+    ):
         self.path = data_dir / "telemetry.sqlite"
         self.id = uuid4().hex
         self.mode = mode
         self.started = perf_counter()
         self.events: list[dict] = []
+        self.on_event = on_event
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS events ("
@@ -65,6 +69,18 @@ class Trace:
                 (self.id, self.mode, kind, json.dumps(event, allow_nan=False)),
             )
         self.events.append(event)
+        if self.on_event:
+            self.on_event(dict(event, trace_id=self.id))
+
+    def activity(self, role: str, status: str, action: str, reason: str, **metadata):
+        self.log(
+            "activity",
+            role=role,
+            status=status,
+            action=action,
+            reason=reason,
+            **metadata,
+        )
 
 
 def summarize(

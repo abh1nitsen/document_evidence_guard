@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Evidence Guard | Document console</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="shell top-inner">
+      <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">◇</span> Evidence Guard</a>
+      <span class="connection"><span></span> Local workspace</span>
+    </div>
+  </header>
+  <main class="shell">
+    <div class="intro">
+      <p class="eyebrow">DOCUMENT CONSOLE</p>
+      <h1>Search the report.</h1>
+      <p>Ask a question, check the source, and follow the route it took.</p>
+    </div>
+    <section class="panel search" aria-labelledby="search-label">
+      <form id="search-form">
+        <label id="search-label" for="question">Ask the report</label>
+        <div class="search-line">
+          <input id="question" name="question" type="search" maxlength="1500"
+            placeholder="What would you like to find?" autocomplete="off" required>
+          <button class="primary" id="search-button" type="submit">Search <span aria-hidden="true">↗</span></button>
+        </div>
+      </form>
+      <div class="search-footer">
+        <span>Report questions and evidence stay on this device.</span>
+        <div class="demo-actions">
+          <button id="demo" class="secondary" type="button">Try synthetic demo</button>
+          <button id="live" class="secondary" type="button" hidden>Run live Groq demo</button>
+        </div>
+      </div>
+      <p id="status" role="status" aria-live="polite" hidden></p>
+    </section>
+    <section class="metrics" aria-label="Routes in this tab">
+      <div class="metric"><span>Runs this tab</span><strong id="total">0</strong></div>
+      <div class="metric"><span>Answered locally</span><strong id="local">0</strong></div>
+      <div class="metric"><span>Groq attempted</span><strong id="frontier">0</strong></div>
+      <div class="metric"><span>Needs evidence</span><strong id="open">0</strong></div>
+    </section>
+    <div class="workspace">
+      <section class="panel history" aria-labelledby="history-title">
+        <div class="panel-head">
+          <div><p class="eyebrow">01 / RUNS</p><h2 id="history-title">Route history</h2></div>
+        </div>
+        <ul id="runs" aria-label="Questions and routes"></ul>
+        <p id="empty-history" class="empty">Your searches and demo runs will appear here.</p>
+      </section>
+      <section class="panel detail" aria-labelledby="detail-title">
+        <div class="panel-head">
+          <div><p class="eyebrow">02 / INSPECT</p><h2 id="detail-title">Answer &amp; trace</h2></div>
+          <span id="route-badge" class="badge" hidden></span>
+        </div>
+        <div id="result" class="empty">Select a run to see the outcome, sources, and decision timeline.</div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

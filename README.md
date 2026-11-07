@@ -37,6 +37,20 @@ on Windows. The local adapter rejects remote hosts and redirects. Ask prompts
 interactively when the question should stay out of shell history. The output and
 the extracted index can contain confidential excerpts, so keep both local.
 
+To use the browser interface, keep the model server running and start:
+
+```sh
+uv run --locked evidence-guard --data-dir "EXTERNAL_PRIVATE_DIR" ui --pdf "EXTERNAL_REPORT.pdf"
+```
+
+Open [the local console](http://127.0.0.1:8787/). Ask a question and select its
+entry in Route history to inspect the answer, source excerpt, fetch timings,
+and the reason for calling or skipping Groq. The question list lives in the
+current tab. The external SQLite database keeps the metadata after the tab closes.
+The synthetic demo runs offline by default. To show the live synthetic demo
+button, start with `--enable-live-demo` and set `GROQ_API_KEY` in the server's
+environment. That button submits only the built-in fictional examples.
+
 ```mermaid
 flowchart LR
     Q[Question] --> P[Local plan]

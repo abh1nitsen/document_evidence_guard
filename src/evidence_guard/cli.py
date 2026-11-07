@@ -10,6 +10,7 @@ from .demo import run_demo
 from .evidence import load_pdf
 from .models import LocalModel
 from .telemetry import Trace, summarize
+from .web import serve
 from .workflow import local_answer
 
 
@@ -28,10 +29,14 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, required=True)
     sub = parser.add_subparsers(dest="command", required=True)
     ask = sub.add_parser("ask", help="Confidential local-only PDF question")
-    ask.add_argument("--pdf", type=Path, required=True)
-    ask.add_argument("--local-url", default="http://127.0.0.1:8080/v1")
-    ask.add_argument("--local-model", default="qwen2.5-1.5b")
-    ask.add_argument("--seconds", type=float, default=90)
+    ui = sub.add_parser("ui", help="Start the local browser interface")
+    for command in (ask, ui):
+        command.add_argument("--pdf", type=Path, required=True)
+        command.add_argument("--local-url", default="http://127.0.0.1:8080/v1")
+        command.add_argument("--local-model", default="qwen2.5-1.5b")
+        command.add_argument("--seconds", type=float, default=90)
+    ui.add_argument("--port", type=int, default=8787)
+    ui.add_argument("--enable-live-demo", action="store_true")
     ask.add_argument("question", nargs="?", help="Omit to enter outside shell history")
     demo = sub.add_parser("demo", help="Synthetic-only routing and Groq smoke test")
     demo.add_argument("--mode", choices=("cascade", "baseline"), default="cascade")
@@ -47,28 +52,35 @@ def main() -> None:
     try:
         data_dir = outside_repository(args.data_dir)
         data_dir.mkdir(parents=True, exist_ok=True)
-        if args.command == "ask":
+        if args.command in {"ask", "ui"}:
             pdf = outside_repository(args.pdf)
             model = LocalModel(args.local_url, args.local_model)
-            question = (args.question or input("Question: ")).strip()
-            if not 1 <= len(question) <= 1500:
-                raise ValueError("Question must have 1 to 1500 characters.")
             if not math.isfinite(args.seconds) or args.seconds <= 0:
                 raise ValueError("Local seconds must be finite and positive.")
-            trace = Trace(data_dir, "confidential_local")
-            trace.log("start", parser="pypdf_layout", model=args.local_model)
-            start = perf_counter()
-            index, hit = load_pdf(pdf, data_dir)
-            trace.log(
-                "index_load",
-                start,
-                cache_hit=hit,
-                pages=len(index.pages),
-                document_sha256=index.fingerprint,
-            )
-            result = local_answer(question, index, model, trace, args.seconds)
-            trace.log("finish", route=result["route"])
-            result.update(trace_id=trace.id, events=trace.events)
+
+            def ask_pdf(question: str) -> dict:
+                question = question.strip()
+                if not 1 <= len(question) <= 1500:
+                    raise ValueError("Question must have 1 to 1500 characters.")
+                trace = Trace(data_dir, "confidential_local")
+                trace.log("start", parser="pypdf_layout", model=model.model)
+                start = perf_counter()
+                index, hit = load_pdf(pdf, data_dir)
+                trace.log(
+                    "index_load",
+                    start,
+                    cache_hit=hit,
+                    pages=len(index.pages),
+                    document_sha256=index.fingerprint,
+                )
+                answer = local_answer(question, index, model, trace, args.seconds)
+                trace.log("finish", route=answer["route"])
+                return dict(answer, trace_id=trace.id, events=trace.events)
+
+            if args.command == "ui":
+                serve(args.port, ask_pdf, data_dir, args.enable_live_demo)
+                return
+            result = ask_pdf(args.question or input("Question: "))
         elif args.command == "demo":
             result = run_demo(data_dir, args.mode, args.live)
         else:

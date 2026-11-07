@@ -1,12 +1,12 @@
 # Drishti Evidence Guard
 
-A local-first document Q&A prototype with a bounded SLM loop, page-level citations,
-and a metered escalation harness. Confidential documents stay local. The optional
-Groq comparison sends only built-in fictional examples.
+Version 0.2.0 provides a local HTML console, exact document definitions, bounded
+arithmetic, and a local SLM that selects evidence passages. Every report response
+has an explicit release contract and a trace of each workflow role.
 
-## Reproduce
+## Run the console
 
-Install Python 3.12 and [uv](https://docs.astral.sh/uv/). From the repository root:
+Install Python 3.12 and [uv](https://docs.astral.sh/uv/), then run from this checkout:
 
 ```sh
 uv sync --locked --python 3.12
@@ -15,95 +15,129 @@ uv run --locked pytest
 uv build
 ```
 
-Keep the source PDF, GGUF weights, extracted index, credentials and run database
-outside Git checkouts. Use an approved local copy of the PDF, without changing the
-original. The repository ships no report, report-derived fixtures, or model weights.
-Point `--data-dir` to a private local directory on a non-shared drive.
+Keep the PDF, model weights, extracted index, credentials, evaluation labels,
+and run databases outside all Git checkouts. This repository contains the
+application, lockfile, synthetic regression tests and scripted synthetic demo.
 
-For PDF questions, start a [llama.cpp](https://github.com/ggml-org/llama.cpp/releases)
-server on loopback with an instruction-tuned GGUF. The Windows smoke test uses
+Start a [llama.cpp](https://github.com/ggml-org/llama.cpp/releases) server using an
+instruction-tuned GGUF stored outside the checkout. The Windows validation uses
 build `b6760` and
 [Qwen2.5 1.5B Instruct Q4_K_M](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/tree/91cad51170dc346986eccefdc2dd33a9da36ead9).
-Download the GGUF from that revision into an external directory. Its SHA-256 is
+The GGUF SHA-256 is
 `6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e`.
 
 ```sh
-llama-server -m "PATH_TO_EXTERNAL_GGUF" --host 127.0.0.1 --port 8080 -c 8192 -np 1 --alias qwen2.5-1.5b
-uv run --locked evidence-guard --data-dir "EXTERNAL_PRIVATE_DIR" ask --pdf "EXTERNAL_REPORT.pdf"
-```
-
-The commands are the same on macOS/Linux and Windows, using `llama-server.exe`
-on Windows. The local adapter rejects remote hosts and redirects. Ask prompts
-interactively when the question should stay out of shell history. The output and
-the extracted index can contain confidential excerpts, so keep both local.
-
-To use the browser interface, keep the model server running and start:
-
-```sh
+llama-server -m "EXTERNAL_MODEL.gguf" --host 127.0.0.1 --port 8080 -c 8192 -np 1 --alias qwen2.5-1.5b
 uv run --locked evidence-guard --data-dir "EXTERNAL_PRIVATE_DIR" ui --pdf "EXTERNAL_REPORT.pdf"
 ```
 
-Open [the local console](http://127.0.0.1:8787/). Ask a question and select its
-entry in Route history to inspect the answer, source excerpt, fetch timings,
-and the reason for calling or skipping Groq. The question list lives in the
-current tab. The external SQLite database keeps the metadata after the tab closes.
-Agent activity updates during a search. Planner, retriever, context, writer,
-verifier and router cards show the action, status, operational reason, evidence
-page IDs and elapsed time. These are sequential workflow roles sharing the local
-model. Selecting an earlier run shows its last recorded state for each role.
-Activity explanations come from explicit workflow decisions and validation results.
-The events stream to the browser as they are persisted in the external database.
-Model and time-limit failures have a separate local-error outcome.
+Use `llama-server.exe` on Windows. The application commands are identical on
+Windows, macOS and Linux. Windows is tested locally and Linux in CI. Actual
+macOS execution has not been tested.
 
-For a definition question, the harness first matches the report's glossary
-expansion to a numbered definition heading. A match returns that complete source
-paragraph with its citation, using no model calls. Other questions use
-schema-constrained local model responses with page IDs limited to the supplied
-evidence. Output truncation is reported separately, and each model step has a
-25-second cap within the overall question budget.
+Open [the local console](http://127.0.0.1:8787/). Agent activity streams actions,
+operational reasons, page IDs and status changes while a question runs. The roles
+execute sequentially and share one local model. Route history lives in the current
+tab. Metadata persists in the external SQLite database without questions, answers,
+excerpts or credentials. Source links open the configured PDF in the same local
+server. Extracted text and returned evidence remain confidential local data.
 
-The model-based semantic checker remains experimental. The generator and checker
-share a model and can make correlated mistakes. Exact glossary definitions use
-deterministic source matching, while broader interpretations need representative
-evaluation before they can be relied on.
-The synthetic demo runs offline by default. To show the live synthetic demo
-button, start with `--enable-live-demo` and set `GROQ_API_KEY` in the server's
-environment. That button submits only the built-in fictional examples.
+For a command-line question, omit the positional question to enter it interactively:
 
-```mermaid
-flowchart LR
-    Q[Question] --> P[Local plan]
-    P --> F[Fetch pages]
-    F --> V[Draft and verify]
-    V -- Evidence gap --> F
-    V -- Verified --> A[Cited answer]
-    V -- Budget or no useful retry --> H[Harness records local stop]
-    S[Synthetic fixture] --> G[Harness records call or skip]
-    G -- Call --> R[Groq and fixture verification]
+```sh
+uv run --locked evidence-guard --data-dir "EXTERNAL_PRIVATE_DIR" ask --pdf "EXTERNAL_REPORT.pdf"
 ```
 
-Context engineering preserves layout text, page numbers, a document fingerprint,
-and the exact evidence sent to the SLM. Loop engineering tries the original
-question, a requirement query, and adjacent pages within a local time budget.
-Harness engineering enforces input paths, loopback, citations, the model output
-contract, and the outbound boundary. Code resolves cited excerpt IDs and checks
-numeric values before a separate semantic verification pass. Unresolved answers are marked
-partial or insufficient. The prototype handles text PDFs. Scanned pages, chart
-image interpretation, and human-grade verification are outside this release.
+## Release contracts
 
-## Meter escalation and project cost
+| Result | What the application establishes |
+| --- | --- |
+| Answered locally | A unique definition heading and its complete source paragraph match the term or glossary expansion. The paragraph is copied directly. |
+| Calculated locally | The user supplied an explicit expression such as `calculate 100 * (1 - 2.5 / 100)`. A bounded arithmetic tool computes it. Document applicability requires review. |
+| Source evidence | Displayed text is copied from identified source passages. Relevance, completeness and any interpretation require review. |
+| Clarification needed | The subject, term or arithmetic input needs clarification. |
+| Insufficient evidence | The reviewed passages did not establish an answer. |
+| Local run failed | No useful outcome could be produced within the runtime contract. Model failures with retrieved passages can return source evidence through a labeled lexical fallback. |
 
-The scripted fixture shows a local lookup, a cross-section escalation, and a
-missing fact. It uses a fixed answer key to check the hosted answer. Offline mode
-is the default. It exercises the decision trace without making any API requests.
+The source index keeps stable passage IDs, numbered headings, paragraphs, table
+headers and rows, and figure captions. Retrieval uses glossary aliases, plural
+normalization, BM25-style ranking and heading boosts. Short table captions are
+joined with their adjacent column blocks. Large blocks are bounded passages.
+Figures are represented by extracted text and captions. The PDF source link
+allows the user to inspect visual content.
+
+Definitions support articles, conversational wording, ordinary terms, acronyms,
+and multiple words. A close unmatched heading prompts clarification. Follow-ups
+can use the last definition's subject in the current tab. An unresolved pronoun
+requests clarification. Multi-turn reasoning over earlier answer details remains
+outside the conversation contract.
+
+For other questions, the SLM selects IDs from schema-constrained candidates.
+The harness rejects unknown or duplicate IDs and copies the corresponding
+source text. It preserves the top lexical candidate as a retrieval anchor.
+The model cannot publish a generated paraphrase or approve its own answer.
+The UI labels these results as evidence requiring review.
+
+The loop tries at most two batches of up to six passages with a 6,000-character
+source budget. The SLM sees short, explicitly truncated previews and integer
+selection IDs. Returned evidence retains the complete selected source passage.
+Only unseen passages justify another retrieval. Model errors stop selection
+and can fall back to retrieved evidence. Each model call has a 12-second ceiling
+inside the overall question budget, which defaults to 35 seconds. Runtime
+performance depends on hardware and model configuration.
+
+## Evaluate locally
+
+Store a labeled JSON array outside Git, with entries shaped like this example:
+
+```json
+[
+  {
+    "id": "sample_definition",
+    "category": "definition",
+    "question": "What is a sample?",
+    "routes": ["answer_local"],
+    "contains": ["required reference phrase"],
+    "forbidden": ["known incorrect statement"],
+    "pages": [4]
+  }
+]
+```
+
+The optional `topic` field supplies an established subject for a follow-up.
+A numeric `calculation` field specifies an expected arithmetic result.
+Run the suite through the same entry point used by the console:
+
+```sh
+uv run --locked evidence-guard --data-dir "EXTERNAL_PRIVATE_DIR" evaluate --pdf "EXTERNAL_REPORT.pdf" --suite "EXTERNAL_LABELS.json"
+```
+
+The external report includes every result, failed checks by case, category
+counts, route counts, median and p95 latency, model failures and source-contract
+checks. It fingerprints the source code, suite and PDF and records Python,
+pypdf, package and model alias. A source change during evaluation is disclosed.
+The server alias alone does not prove the deployed model artifact. Reproduce
+the model revision, hash and llama.cpp build as well.
+
+These checks measure routing, required content, provenance and the extractive
+contract. They do not independently measure semantic accuracy. Human review
+of relevance, completeness and supported interpretations remains necessary.
+Evaluation files contain report-derived content and stay outside Git.
+The evaluation command exits with a failure status when checks fail or the
+source, document or labels change during the run.
+
+## Measure hosted calls and scale scenarios
+
+Groq is available only to the built-in fictional demo. Offline execution is
+the default:
 
 ```sh
 uv run --locked evidence-guard --data-dir "EXTERNAL_PRIVATE_DIR" demo
 ```
 
-Set `GROQ_API_KEY` from your local secret store, then run both live modes on the
-same synthetic cases into a fresh external data directory for each comparison.
-Live calls can incur charges.
+Set `GROQ_API_KEY` from a local secret store. The live cascade makes a hosted call
+for the scripted interpretation case, while the baseline calls Groq for each
+fixture. Use a fresh external sample directory for each matched comparison:
 
 ```sh
 uv run --locked evidence-guard --data-dir "EXTERNAL_SAMPLE_DIR" demo --mode cascade --live
@@ -111,20 +145,19 @@ uv run --locked evidence-guard --data-dir "EXTERNAL_SAMPLE_DIR" demo --mode base
 uv run --locked evidence-guard --data-dir "EXTERNAL_SAMPLE_DIR" report --monthly-questions 100000 --expected-frontier-rate 0.10 --local-cost-per-question 0.00001
 ```
 
-SQLite records the trace ID, route and reason, elapsed time to the route decision,
-fetch attempts and duration, first verified evidence, model timings, and end-to-end
-time. The harness persists a frontier attempt before dispatch, then records status,
-request ID, prompt/output/cached tokens and estimated list cost when available.
-The database stores metadata without prompt, excerpt, answer or credential text.
-Incomplete usage is surfaced separately, and an unknown charge never counts as a
-free call in the projection.
+To expose the live synthetic button in the console, start the server with
+`--enable-live-demo` and the environment key. Confidential report questions
+have no hosted execution path.
 
-The report prices measured token usage using the public
-[Groq model card](https://console.groq.com/docs/model/openai/gpt-oss-120b) rate
-snapshot from 2026-11-06. It estimates all-frontier cost as volume times mean
-baseline call cost. Cascade cost uses volume times the assumed escalation rate
-times mean cascade call cost. Net savings subtract the provided local cost per
-question. Use a representative, approved workload to estimate escalation rates,
-quality, and local costs before treating the projection as a business case.
-The three fictional cases validate the measurement path and do not benchmark
-accuracy, escalation rates, or production performance.
+Each hosted attempt is recorded before dispatch, followed by status, elapsed
+time, provider request ID, input/output/cached tokens, and estimated list cost
+when usage is available. Unknown usage is counted separately and blocks a
+cost comparison. Local call timings and token usage are recorded separately.
+Version 2 report traffic has its own telemetry mode.
+
+Scale projections use the measured mean hosted call costs and an explicitly
+assumed escalation rate and local cost. Rates come from the dated
+[Groq model card](https://console.groq.com/docs/model/openai/gpt-oss-120b) snapshot.
+The small scripted demo verifies instrumentation. A representative evaluated
+workload is required to estimate production quality, coverage and cost per
+correctly resolved question.

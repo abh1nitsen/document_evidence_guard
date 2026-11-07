@@ -45,14 +45,14 @@ def chat(
         "temperature": 0,
         "response_format": {"type": "json_object"},
     }
-    body["max_completion_tokens" if key else "max_tokens"] = 768 if key else 640
+    body["max_completion_tokens" if key else "max_tokens"] = 768 if key else 256
     if schema is not None:
         body["response_format"]["schema"] = schema
     if key:
         body["reasoning_effort"] = "low"
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "drishti-evidence-guard/0.1.2",
+        "User-Agent": "drishti-evidence-guard/0.2.0",
     }
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -115,6 +115,11 @@ class LocalModel:
             {"role": "system", "content": instruction},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ]
-        return parse_object(
-            chat(self.endpoint, self.model, messages, timeout, schema=schema).content
-        )
+        self.last_usage = None
+        result = chat(self.endpoint, self.model, messages, timeout, schema=schema)
+        usage = result.usage if isinstance(result.usage, dict) else {}
+        self.last_usage = {
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+        }
+        return parse_object(result.content)

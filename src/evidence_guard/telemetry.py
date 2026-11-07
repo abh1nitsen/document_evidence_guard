@@ -117,7 +117,11 @@ def summarize(
         if kind == "finish":
             route = event["route"]
             stats["questions"] += 1
-            stats["verified_answers"] += route in {"answer_local", "answer_frontier"}
+            stats["verified_answers"] += route in {
+                "answer_local",
+                "answer_frontier",
+                "calculation_local",
+            }
             stats["routes"][route] = stats["routes"].get(route, 0) + 1
             latencies.setdefault(mode, []).append(event["elapsed_ms"])
         if kind == "first_verified":

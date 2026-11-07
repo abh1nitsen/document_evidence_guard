@@ -6,6 +6,7 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass
+from difflib import get_close_matches
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -20,22 +21,34 @@ STOP = set(
 
 
 def terms(value: str) -> set[str]:
-    return set(re.findall(r"\w+(?:\.\d+)*", value.casefold())) - STOP
+    words = set(re.findall(r"\w+(?:\.\d+)*", value.casefold())) - STOP
+    return {
+        word[:-1]
+        if len(word) > 4 and word.endswith("s") and not word.endswith(("ss", "is", "us"))
+        else word
+        for word in words
+    }
 
 
 def definition_target(question: str) -> str | None:
-    match = re.search(
-        r"\bwhat\s+(?:is\s+(?:the\s+)?([a-z][a-z0-9-]{1,15})|"
-        r"([a-z][a-z0-9-]{1,15})\s+is)\s*(?:[?,.!]|$)|"
-        r"\b(?:define|explain)\s+(?:the\s+)?([a-z][a-z0-9-]{1,15})"
-        r"\s*(?:[?,.!]|$)|"
-        r"\bwhat\s+does\s+([a-z][a-z0-9-]{1,15})\s+(?:mean|stand for)\b",
-        question,
-        re.IGNORECASE,
+    question = question.strip().replace("_", " ")
+    patterns = (
+        r"\bwhat\s+(?:is|are)\s+(?:a\s+|an\s+|the\s+)?([^?.,]{1,90})",
+        r"\bwhat\s+does\s+(.{1,80}?)\s+(?:mean|stand for)\b",
+        r"\bwhat\s+(.{1,80}?)\s+is\s*(?:[?,.]|$)",
+        r"\b(?:define|explain)\s+(?:a\s+|an\s+|the\s+)?([^?.,]{1,90})",
     )
-    return (
-        next((part.lower() for part in match.groups() if part), None) if match else None
-    )
+    for pattern in patterns:
+        match = re.search(pattern, question, re.IGNORECASE)
+        if match:
+            target = re.sub(
+                r"\s+(?:please|in simple words|in this report|to me)\s*$",
+                "",
+                match[1].strip(),
+                flags=re.IGNORECASE,
+            )
+            return target.casefold()
+    return None
 
 
 @dataclass(frozen=True)
@@ -44,12 +57,111 @@ class Page:
     text: str
 
 
+@dataclass(frozen=True)
+class Passage:
+    id: str
+    page: int
+    heading: str
+    kind: str
+    text: str
+    section_start: bool = False
+
+
+def normalize(value: str) -> str:
+    return " ".join(value.replace("_", " ").split()).casefold()
+
+
+def passages_from_pages(pages: list[Page]) -> list[Passage]:
+    result = []
+    heading = ""
+    for page in pages:
+        pending_section = False
+        structured = re.sub(
+            r"(?m)^(?=\d{1,2}(?:\.\d{1,2}){1,3}\s+[A-Z])",
+            "\n\n",
+            page.text,
+        )
+        blocks = [block for block in re.split(r"\n\s*\n", structured) if block.strip()]
+        merged = []
+        position = 0
+        while position < len(blocks):
+            block = blocks[position]
+            if block.lstrip().startswith("Table "):
+                while position + 1 < len(blocks):
+                    following = blocks[position + 1]
+                    column_lines = sum(
+                        bool(re.search(r"\S {2,}\S", line))
+                        for line in following.splitlines()
+                    )
+                    if column_lines < 1 and not following.lstrip().startswith("Source:"):
+                        break
+                    block += "\n\n" + following
+                    position += 1
+            merged.append(block)
+            position += 1
+        for block in merged:
+            lines = block.strip().splitlines()
+            if not lines or re.search(r"\.{8,}\s*\d+", block):
+                continue
+            first = lines[0].strip()
+            numbered = re.match(r"^\d+(?:\.\d+)+\s+(.+)", first)
+            if numbered:
+                heading = numbered[1]
+            elif re.match(r"^(?:Chapter \d+|Appendix [A-Z])\b", first) or first in {
+                "Abstract",
+                "Executive Summary",
+                "Key takeaways",
+                "References",
+                "Abbreviations",
+            }:
+                heading = first
+            kind = "paragraph"
+            if first.startswith("Table "):
+                kind = "table"
+            elif first.startswith("Figure "):
+                kind = "figure_caption"
+            if len(lines) == 1 and (numbered or first == heading):
+                pending_section = numbered is not None
+                continue
+            text = " ".join(block.split())
+            section_start = (numbered is not None or pending_section) and len(
+                text
+            ) <= 1800
+            pending_section = False
+            start = 0
+            while start < len(text):
+                end = min(start + (3200 if kind == "table" else 1800), len(text))
+                if end < len(text):
+                    boundary = text.rfind(". ", start + 700, end)
+                    if boundary >= 0:
+                        end = boundary + 1
+                    else:
+                        boundary = text.rfind(" ", start, end)
+                        if boundary > start:
+                            end = boundary
+                chunk = text[start:end].strip()
+                digest = hashlib.sha256(chunk.encode()).hexdigest()[:12]
+                result.append(
+                    Passage(
+                        f"p{page.number}-{len(result) + 1}-{digest}",
+                        page.number,
+                        first if kind != "paragraph" else heading,
+                        kind,
+                        chunk,
+                        section_start and start == 0,
+                    )
+                )
+                start = end
+    return result
+
+
 class Index:
     def __init__(self, pages: list[Page], fingerprint: str):
         self.pages = pages
         self.fingerprint = fingerprint
         self.words = {page.number: terms(page.text) for page in pages}
         self.frequency = Counter(word for words in self.words.values() for word in words)
+        self.passages = passages_from_pages(pages)
 
     def expansion(self, target: str) -> str | None:
         for page in self.pages:
@@ -63,36 +175,95 @@ class Index:
                     return match[1].strip()
         return None
 
-    def definition(self, question: str) -> dict | None:
-        """Resolve a glossary term and matching definition heading without generation."""
+    def definitions(self, question: str) -> list[dict]:
+        """Match explicit document definitions, including ordinary multiword terms."""
         target = definition_target(question)
         expansion = self.expansion(target) if target else None
-        if not expansion:
-            return None
-        for page in self.pages:
-            for paragraph in re.split(r"\n\s*\n", page.text):
-                lines = paragraph.strip().splitlines()
-                if len(lines) < 2:
-                    continue
-                heading = re.sub(r"^\d+(?:\.\d+)+\s+", "", lines[0].strip())
-                if heading == lines[0].strip():
-                    continue
-                if not (
-                    expansion.casefold() in heading.casefold()
-                    and target in terms(heading)
-                ):
-                    continue
-                body = " ".join(" ".join(lines[1:]).split())
-                if len(body) > 1400 or not re.search(
-                    rf"\b{re.escape(target)}\s+(?:is|means)\b", body, re.IGNORECASE
-                ):
-                    continue
-                return {
-                    "page": page.number,
-                    "text": f"{expansion} ({target.upper()}). {body}",
-                    "quote": " ".join(paragraph.split()),
+        if not target:
+            return []
+        matches = []
+        for passage in self.passages:
+            exact = normalize(passage.heading) == normalize(target)
+            acronym = expansion and (
+                normalize(expansion) in normalize(passage.heading)
+                and target in terms(passage.heading)
+            )
+            if (
+                not (exact or acronym)
+                or passage.kind != "paragraph"
+                or not passage.section_start
+            ):
+                continue
+            if not re.search(
+                r"\b(?:is|are|refers to|means|denotes|describes|designation)\b",
+                passage.text,
+                re.IGNORECASE,
+            ):
+                continue
+            text = re.sub(
+                r"^\d+(?:\.\d+)+\s+" + re.escape(passage.heading) + r"\s*",
+                "",
+                passage.text,
+            )
+            if expansion:
+                text = f"{expansion} ({target.upper()}). {text}"
+            matches.append(
+                {
+                    "page": passage.page,
+                    "text": text,
+                    "quote": passage.text,
+                    "passage_id": passage.id,
+                    "heading": passage.heading,
                 }
-        return None
+            )
+        return matches
+
+    def definition(self, question: str) -> dict | None:
+        matches = self.definitions(question)
+        return matches[0] if len(matches) == 1 else None
+
+    def suggestions(self, target: str) -> list[str]:
+        headings = {
+            normalize(p.heading): p.heading
+            for p in self.passages
+            if 2 <= len(p.heading) <= 80 and normalize(p.heading) != normalize(target)
+        }
+        close = get_close_matches(normalize(target), sorted(headings), n=2, cutoff=0.86)
+        return [headings[key] for key in close]
+
+    def search(self, query: str, limit: int = 8) -> list[Passage]:
+        """BM25-style paragraph retrieval with glossary aliases and heading boosts."""
+        query_terms = terms(query)
+        for token in list(query_terms):
+            expansion = self.expansion(token)
+            if expansion:
+                query_terms |= terms(expansion)
+        tokenized = [terms(p.text) for p in self.passages]
+        frequency = Counter(word for words in tokenized for word in words)
+        average = sum(len(words) for words in tokenized) / max(1, len(tokenized))
+        target = definition_target(query)
+        ranked = []
+        for passage, words in zip(self.passages, tokenized, strict=True):
+            matched = words & query_terms
+            score = sum(
+                math.log1p(
+                    (len(tokenized) - frequency[word] + 0.5) / (frequency[word] + 0.5)
+                )
+                * 2.2
+                / (1 + 1.2 * (0.25 + 0.75 * len(words) / max(1, average)))
+                for word in matched
+            )
+            score += 2 * len(terms(passage.heading) & query_terms)
+            if passage.kind == "figure_caption" or passage.text.startswith("Source:"):
+                score *= 0.25
+            if passage.heading in {"Abbreviations", "References"}:
+                score *= 0.25
+            if target and normalize(target) == normalize(passage.heading):
+                score += 20
+            if matched:
+                ranked.append((score, passage))
+        ranked.sort(key=lambda item: (-item[0], item[1].page, item[1].id))
+        return [passage for _, passage in ranked[:limit]]
 
     def fetch(self, query: str, limit: int = 3) -> list[Page]:
         words = terms(query)

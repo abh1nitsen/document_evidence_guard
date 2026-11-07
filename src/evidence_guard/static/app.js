@@ -4,6 +4,7 @@ const byId = (id) => document.getElementById(id);
 const runs = [];
 let selected = null;
 let activeRun = null;
+let conversationTopic = null;
 const roleNames = {
   planner: "Planner", retriever: "Retriever", context: "Context",
   writer: "Writer", verifier: "Verifier", router: "Router",
@@ -18,9 +19,17 @@ const routeLabels = {
   frontier_unverified: ["Groq answer withheld", "open"],
   local_error: ["Local run failed", "open"],
   running: ["Running locally", "local"],
+  evidence_only: ["Source evidence · review needed", "open"],
+  ask_clarification: ["Clarification needed", "open"],
+  calculation_local: ["Calculated locally", "local"],
 };
 const reasons = {
-  exact_source_definition: "The report's glossary and definition heading matched. No model call was needed.",
+  exact_source_definition: "The report explicitly defines the requested term. No model call was needed.",
+  deterministic_arithmetic: "An explicit arithmetic expression was evaluated locally.",
+  interpretation_requires_review: "The source passages are available, but a complete interpretation requires review.",
+  missing_conversation_subject: "The follow-up does not have an established subject.",
+  no_established_answer: "The reviewed passages did not establish an answer.",
+  ambiguous_term: "The term needs clarification before answering.",
   local_verified: "The local evidence checks passed.",
   missing_source_fact: "The source does not contain the requested fact.",
   cross_section_interpretation_unresolved: "The cross-section interpretation remained open.",
@@ -53,7 +62,7 @@ function describe(event) {
   switch (event.kind) {
     case "activity": return `${roleNames[event.role] || event.role} · ${event.action} · ${event.reason}`;
     case "index_load": return `Report index ${event.cache_hit ? "reused" : "built"}${duration}`;
-    case "fetch": return `Fetch ${event.attempt}${pages}${duration}`;
+    case "fetch": return `Fetch ${event.attempt} · ${plain(event.strategy || "synthetic")}${pages}${duration}`;
     case "local_model": return `Local model · ${plain(event.stage)}${duration}`;
     case "local_issue": return `Local issue · ${plain(event.code)}`;
     case "first_verified": return `First evidence verified${pages}`;
@@ -95,10 +104,13 @@ function drawAgents(run) {
     heading.append(element("strong", label), element("span", plain(state), `badge ${state}`));
     card.append(heading);
     card.append(element("p", last?.action || (
-      run?.case ? "Scripted synthetic fixture" : "Waiting for this role's turn."
+      run?.case ? "Scripted synthetic fixture"
+        : run && !run.running ? "This role was not needed for this run."
+        : "Waiting for this role's turn."
     )));
     card.append(element("p", last?.reason || (
       run?.case ? "This demo records routing events without executing each model role."
+        : run && !run.running ? "The route completed without invoking this role."
         : "The controller schedules this role when its input is ready."
     ), "why"));
     if (last?.pages?.length) card.append(element("p", `Pages ${last.pages.join(", ")}`, "why"));
@@ -123,16 +135,42 @@ function showRun(run) {
   const total = eventOf(run, "finish");
   const lane = run.case ? "Synthetic demo" : "Confidential report";
   panel.append(element("p", `${lane} · ${total ? milliseconds(total.elapsed_ms) + " total" : "Run in progress"}`, "summary"));
+  const verification = {
+    exact_source_definition: "Verification · explicit definition in source",
+    exact_excerpt_only: "Verification · source provenance only; relevance and completeness require review",
+    bounded_arithmetic: "Verification · arithmetic on user-provided values",
+  };
+  if (run.verification) panel.append(element("p", verification[run.verification] || plain(run.verification), "proof"));
+  if (run.message) panel.append(element("p", run.message, "summary"));
+  if (run.selection_method) panel.append(element("p", `Selection · ${plain(run.selection_method)}`, "summary"));
+  if (run.calculation) {
+    panel.append(element("h3", "Calculation"));
+    panel.append(element("p", `${run.calculation.expression} = ${run.calculation.value}`, "answer"));
+  }
   if (run.claims?.length) {
     panel.append(element("h3", "Evidence"));
     for (const claim of run.claims) {
       panel.append(element("p", claim.text, "answer"));
       const source = element("details");
       source.append(element("summary", `PDF page ${claim.page}`), element("blockquote", claim.quote));
+      const openSource = element("a", "Open source page");
+      openSource.href = `/api/document#page=${claim.page}`;
+      openSource.target = "_blank";
+      openSource.rel = "noopener";
+      source.append(openSource);
       panel.append(source);
     }
-  } else if (!run.case && !run.running) {
+  } else if (!run.case && !run.running && !run.message) {
     panel.append(element("p", "The local run could not verify an answer.", "summary"));
+  }
+  if (run.evidence?.length) {
+    const evidence = element("details");
+    evidence.append(element("summary", "Inspect retrieved passages"));
+    for (const passage of run.evidence) {
+      evidence.append(element("h3", `Page ${passage.page} · ${passage.heading || passage.kind}`));
+      evidence.append(element("blockquote", passage.text));
+    }
+    panel.append(evidence);
   }
   if (run.reason) panel.append(element("p", `Stop reason · ${plain(run.reason)}`, "summary"));
   panel.append(element("h3", "Decision timeline"));
@@ -151,9 +189,9 @@ function showRun(run) {
 function drawHistory() {
   byId("empty-history").hidden = runs.length > 0;
   byId("total").textContent = runs.length;
-  byId("local").textContent = runs.filter((run) => run.route === "answer_local").length;
+  byId("local").textContent = runs.filter((run) => ["answer_local", "calculation_local"].includes(run.route)).length;
   byId("frontier").textContent = runs.filter((run) => eventOf(run, "frontier_start")).length;
-  byId("open").textContent = runs.filter((run) => ["partial", "insufficient_evidence"].includes(run.route)).length;
+  byId("open").textContent = runs.filter((run) => ["partial", "insufficient_evidence", "evidence_only", "ask_clarification", "local_error"].includes(run.route)).length;
   const list = byId("runs");
   list.replaceChildren();
   for (const run of runs) {
@@ -213,6 +251,7 @@ async function request(path, payload, message) {
           pending.events.push(item.event);
         } else if (item.type === "result") {
           Object.assign(pending, item.result, {running: false});
+          if (item.result.topic) conversationTopic = item.result.topic;
           finished = true;
         }
         showRun(pending);
@@ -256,7 +295,7 @@ drawAgents(null);
 byId("search-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const question = byId("question").value.trim();
-  if (question) request("/api/search", {question}, "Searching and verifying locally…");
+  if (question) request("/api/search", {question, topic: conversationTopic}, "Searching and checking source evidence locally…");
 });
 byId("demo").addEventListener("click", () => {
   request("/api/demo", {live: false}, "Running the offline synthetic demo…");
@@ -266,4 +305,9 @@ byId("live").addEventListener("click", () => {
 });
 fetch("/api/config").then((response) => response.json()).then((config) => {
   byId("live").hidden = !config.live_enabled;
+  byId("build-info").textContent = `v${config.version} · ${config.contract}`;
+  if (config.evaluation) {
+    byId("evaluation-summary").textContent = `Latest local evaluation: ${config.evaluation.passed}/${config.evaluation.total} automated checks passed. Median ${milliseconds(config.evaluation.median_ms)} · p95 ${milliseconds(config.evaluation.p95_ms)}. Cases with model failures: ${config.evaluation.model_failure_cases ?? "unrecorded"}. Relevance requires separate review.`;
+    byId("evaluation-summary").hidden = false;
+  }
 }).catch(() => {});

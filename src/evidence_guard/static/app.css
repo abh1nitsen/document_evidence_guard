@@ -20,6 +20,8 @@ body { margin: 0; }
 main { padding: 42px 0 52px; }
 .intro { margin-bottom: 23px; }
 .intro > p:last-child { margin: 7px 0 0; color: var(--muted); }
+.build-info { color: var(--muted); font-size: .78rem; }
+.proof { font-size: .83rem; color: #69470b; background: #fff5dc; padding: 10px; border-radius: 7px; line-height: 1.5; }
 .eyebrow { margin: 0 0 6px; font-size: .72rem; font-weight: 700; letter-spacing: .13em; color: var(--green); }
 h1 { margin: 0; font-size: clamp(2.1rem, 5.5vw, 3.45rem); letter-spacing: -.055em; line-height: 1.06; }
 h2 { margin: 0; font-size: 1.2rem; letter-spacing: -.025em; }

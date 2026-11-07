@@ -7,6 +7,7 @@ from pathlib import Path
 from time import perf_counter
 
 from .demo import run_demo
+from .evaluation import evaluate
 from .evidence import load_pdf
 from .models import LocalModel
 from .telemetry import Trace, summarize
@@ -30,11 +31,15 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     ask = sub.add_parser("ask", help="Confidential local-only PDF question")
     ui = sub.add_parser("ui", help="Start the local browser interface")
-    for command in (ask, ui):
+    evaluation = sub.add_parser(
+        "evaluate", help="Run a labeled external evaluation suite"
+    )
+    evaluation.add_argument("--suite", type=Path, required=True)
+    for command in (ask, ui, evaluation):
         command.add_argument("--pdf", type=Path, required=True)
         command.add_argument("--local-url", default="http://127.0.0.1:8080/v1")
         command.add_argument("--local-model", default="qwen2.5-1.5b")
-        command.add_argument("--seconds", type=float, default=90)
+        command.add_argument("--seconds", type=float, default=35)
     ui.add_argument("--port", type=int, default=8787)
     ui.add_argument("--enable-live-demo", action="store_true")
     ask.add_argument("question", nargs="?", help="Omit to enter outside shell history")
@@ -52,18 +57,30 @@ def main() -> None:
     try:
         data_dir = outside_repository(args.data_dir)
         data_dir.mkdir(parents=True, exist_ok=True)
-        if args.command in {"ask", "ui"}:
+        if args.command in {"ask", "ui", "evaluate"}:
             pdf = outside_repository(args.pdf)
             model = LocalModel(args.local_url, args.local_model)
             if not math.isfinite(args.seconds) or args.seconds <= 0:
                 raise ValueError("Local seconds must be finite and positive.")
 
-            def ask_pdf(question: str, on_event=None) -> dict:
+            def ask_pdf(question: str, on_event=None, topic: str | None = None) -> dict:
                 question = question.strip()
                 if not 1 <= len(question) <= 1500:
                     raise ValueError("Question must have 1 to 1500 characters.")
-                trace = Trace(data_dir, "confidential_local", on_event=on_event)
-                trace.log("start", parser="pypdf_layout", model=model.model)
+                trace = Trace(
+                    data_dir,
+                    "evaluation_v020"
+                    if args.command == "evaluate"
+                    else "confidential_local_v2",
+                    on_event=on_event,
+                )
+                trace.log(
+                    "start",
+                    parser="pypdf_layout",
+                    model=model.model,
+                    model_identity="server_alias_only",
+                    budget_seconds=args.seconds,
+                )
                 start = perf_counter()
                 trace.activity(
                     "context",
@@ -86,14 +103,18 @@ def main() -> None:
                     "The local index is available for retrieval.",
                     pages_total=len(index.pages),
                 )
-                answer = local_answer(question, index, model, trace, args.seconds)
+                answer = local_answer(question, index, model, trace, args.seconds, topic)
                 trace.log("finish", route=answer["route"])
                 return dict(answer, trace_id=trace.id, events=trace.events)
 
             if args.command == "ui":
-                serve(args.port, ask_pdf, data_dir, args.enable_live_demo)
+                serve(args.port, ask_pdf, data_dir, args.enable_live_demo, document=pdf)
                 return
-            result = ask_pdf(args.question or input("Question: "))
+            if args.command == "evaluate":
+                suite = outside_repository(args.suite)
+                result = evaluate(suite, data_dir, ask_pdf, pdf)
+            else:
+                result = ask_pdf(args.question or input("Question: "))
         elif args.command == "demo":
             result = run_demo(data_dir, args.mode, args.live)
         else:
@@ -110,3 +131,15 @@ def main() -> None:
     except (ValueError, OSError) as exc:
         parser.exit(2, f"error: {exc}\n")
     print(json.dumps(result, indent=2))
+    if args.command == "evaluate" and (
+        result["summary"]["passed"] != result["summary"]["total"]
+        or any(
+            result["manifest"].get(key, False)
+            for key in (
+                "source_changed_during_run",
+                "suite_changed_during_run",
+                "document_changed_during_run",
+            )
+        )
+    ):
+        parser.exit(1)

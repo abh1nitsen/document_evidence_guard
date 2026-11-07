@@ -4,11 +4,13 @@ import json
 import os
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.metadata import version
 from importlib.resources import files
 from pathlib import Path
 from threading import Lock
 
 from .demo import CASES, run_demo
+from .workflow import CONTRACT_VERSION
 
 ASSETS = {
     "/": ("index.html", "text/html"),
@@ -17,7 +19,13 @@ ASSETS = {
 }
 
 
-def serve(port: int, ask: Callable[..., dict], data_dir: Path, enable_live: bool) -> None:
+def serve(
+    port: int,
+    ask: Callable[..., dict],
+    data_dir: Path,
+    enable_live: bool,
+    document: Path | None = None,
+) -> None:
     if not 1 <= port <= 65535:
         raise ValueError("Port must be between 1 and 65535.")
     authority = f"127.0.0.1:{port}"
@@ -36,7 +44,10 @@ def serve(port: int, ask: Callable[..., dict], data_dir: Path, enable_live: bool
 
         def send(self, status: int, value: bytes, mime: str) -> None:
             self.send_response(status)
-            self.send_header("Content-Type", f"{mime}; charset=utf-8")
+            self.send_header(
+                "Content-Type",
+                mime if mime == "application/pdf" else f"{mime}; charset=utf-8",
+            )
             self.send_header("Content-Length", str(len(value)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
@@ -52,7 +63,7 @@ def serve(port: int, ask: Callable[..., dict], data_dir: Path, enable_live: bool
         def reply(self, status: int, value) -> None:
             self.send(status, json.dumps(value).encode("utf-8"), "application/json")
 
-        def stream_search(self, question: str) -> None:
+        def stream_search(self, question: str, topic: str | None) -> None:
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -73,6 +84,7 @@ def serve(port: int, ask: Callable[..., dict], data_dir: Path, enable_live: bool
             try:
                 result = ask(
                     question,
+                    topic=topic,
                     on_event=lambda event: emit({"type": "event", "event": event}),
                 )
             except Exception:
@@ -87,8 +99,30 @@ def serve(port: int, ask: Callable[..., dict], data_dir: Path, enable_live: bool
             elif self.path in assets:
                 value, mime = assets[self.path]
                 self.send(200, value, mime)
+            elif self.path == "/api/document" and document is not None:
+                self.send(200, document.read_bytes(), "application/pdf")
             elif self.path == "/api/config":
-                self.reply(200, {"live_enabled": live_enabled})
+                summary = None
+                reports = sorted(
+                    (data_dir / "evaluations").glob("*.json"),
+                    key=lambda path: path.stat().st_mtime,
+                )
+                if reports:
+                    try:
+                        summary = json.loads(reports[-1].read_text(encoding="utf-8"))[
+                            "summary"
+                        ]
+                    except (OSError, ValueError, KeyError):
+                        pass
+                self.reply(
+                    200,
+                    {
+                        "live_enabled": live_enabled,
+                        "version": version("drishti-evidence-guard"),
+                        "contract": CONTRACT_VERSION,
+                        "evaluation": summary,
+                    },
+                )
             else:
                 self.reply(404, {"error": "Page unavailable."})
 
@@ -128,7 +162,13 @@ def serve(port: int, ask: Callable[..., dict], data_dir: Path, enable_live: bool
                             400, {"error": "Enter a question up to 1500 characters."}
                         )
                         return
-                    self.stream_search(question)
+                    topic = payload.get("topic")
+                    if topic is not None and (
+                        not isinstance(topic, str) or not 1 <= len(topic) <= 120
+                    ):
+                        self.reply(400, {"error": "Invalid conversation subject."})
+                        return
+                    self.stream_search(question, topic)
                     return
                 elif self.path == "/api/demo":
                     live = payload.get("live") is True

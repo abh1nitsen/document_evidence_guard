@@ -19,6 +19,8 @@
       <p class="eyebrow">DOCUMENT CONSOLE</p>
       <h1>Search the report.</h1>
       <p>Ask a question, check the source, and follow the route it took.</p>
+      <p id="build-info" class="build-info"></p>
+      <p id="evaluation-summary" class="build-info" hidden></p>
     </div>
     <section class="panel search" aria-labelledby="search-label">
       <form id="search-form">
@@ -48,9 +50,9 @@
     </section>
     <section class="metrics" aria-label="Routes in this tab">
       <div class="metric"><span>Runs this tab</span><strong id="total">0</strong></div>
-      <div class="metric"><span>Answered locally</span><strong id="local">0</strong></div>
+      <div class="metric"><span>Direct local results</span><strong id="local">0</strong></div>
       <div class="metric"><span>Groq attempted</span><strong id="frontier">0</strong></div>
-      <div class="metric"><span>Needs evidence</span><strong id="open">0</strong></div>
+      <div class="metric"><span>Needs review or input</span><strong id="open">0</strong></div>
     </section>
     <div class="workspace">
       <section class="panel history" aria-labelledby="history-title">

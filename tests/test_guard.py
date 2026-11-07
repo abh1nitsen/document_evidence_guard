@@ -5,11 +5,12 @@ import pytest
 
 from evidence_guard.cli import outside_repository
 from evidence_guard.demo import run_demo
+from evidence_guard.evaluation import evaluate
 from evidence_guard.evidence import Index, Page, definition_target
 from evidence_guard.models import ChatResult, LocalModel, ModelError
 from evidence_guard.models import chat as model_chat
 from evidence_guard.telemetry import Trace, cost, summarize
-from evidence_guard.workflow import anchored_claims, local_answer
+from evidence_guard.workflow import anchored_claims, calculate, local_answer
 
 
 @pytest.mark.parametrize(
@@ -73,7 +74,7 @@ def test_conversational_definition_finds_complete_definition_before_broad_mentio
     excerpt = index.excerpts([definition], question)[0].text
     assert "rating from 0 to 50" in excerpt
     assert excerpt.startswith("1.3.1")
-    assert definition_target("What is the whole-video mean score?") is None
+    assert index.definition("What is the whole-video mean score?") is None
     assert definition_target("What does ABC mean?") == "abc"
 
 
@@ -106,7 +107,7 @@ def test_explicit_definition_uses_source_without_a_model_call(tmp_path):
     assert result["route"] == "answer_local"
     assert result["claims"][0]["page"] == 4
     assert "requires field review" in result["claims"][0]["text"]
-    assert trace.events[-1]["reason"] == "exact_source_definition"
+    assert any(e.get("reason") == "exact_source_definition" for e in trace.events)
 
 
 def test_local_loop_can_recover_with_targeted_fetch(tmp_path):
@@ -115,41 +116,31 @@ def test_local_loop_can_recover_with_targeted_fetch(tmp_path):
         drafted = 0
 
         def run(self, instruction, payload, timeout, schema=None):
-            if "requirements:" in instruction:
-                return {"requirements": ["exception"]}
-            if "supported:" in instruction:
-                return {"supported": True, "complete": True}
             self.drafted += 1
             if self.drafted == 1:
-                return {"claims": [], "gaps": ["exception"]}
+                return {"selected_ids": [], "status": "missing"}
             return {
-                "claims": [
-                    {
-                        "text": "The waiver applies on Friday.",
-                        "page": 2,
-                        "quote": "The exception applies on Friday.",
-                    }
-                ],
-                "gaps": [],
+                "selected_ids": [payload["passages"][0]["id"]],
+                "status": "relevant",
             }
 
     trace = Trace(tmp_path, "confidential_local")
     result = local_answer(
-        "When is the waiver valid?",
+        "Summarize the waiver.",
         Index(
-            [
-                Page(1, "The waiver has a condition."),
-                Page(2, "The exception applies on Friday."),
-            ],
+            [Page(i, f"The waiver applies on day {i}.") for i in range(1, 9)],
             "synthetic",
         ),
         Model(),
         trace,
         2,
     )
-    assert result["route"] == "answer_local"
-    assert [e["new_pages"] for e in trace.events if e["kind"] == "fetch"] == [[1], [2]]
-    assert trace.events[-1]["reason"] == "local_verified"
+    assert result["route"] == "evidence_only"
+    assert result["claims"][0]["text"] == result["claims"][0]["quote"]
+    assert [e["new_pages"] for e in trace.events if e["kind"] == "fetch"] == [
+        [1, 2, 3, 4, 5, 6],
+        [7, 8],
+    ]
 
 
 def test_live_fixture_counts_calls_and_prices_a_matched_baseline(tmp_path, monkeypatch):
@@ -215,10 +206,148 @@ def test_activity_is_emitted_before_model_work_and_failure_is_distinct(tmp_path,
         trace,
         2,
     )
-    assert result["route"] == "local_error"
-    assert result["reason"] == failure
+    assert result["route"] == "evidence_only"
+    assert result["selection_method"] == "lexical_fallback_after_" + failure
     assert any(event.get("status") == "error" for event in observed)
     assert all(event["trace_id"] == trace.id for event in observed)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "what is an incident",
+        "Define incident.",
+        "Explain the incident",
+        "I don't know what incident is, can you tell me",
+    ],
+)
+def test_ordinary_definition_paraphrases_preserve_qualifiers(tmp_path, question):
+    index = Index(
+        [
+            Page(
+                2,
+                "1.4.2 Incident\n"
+                "Incident refers to a recorded test event. It requires review.",
+            )
+        ],
+        "synthetic",
+    )
+    claim = index.definition(question)
+    assert claim["page"] == 2
+    assert "requires review" in claim["text"]
+    assert claim["quote"] in " ".join(index.pages[0].text.split())
+
+
+def test_self_approval_cannot_release_invented_answer(tmp_path):
+    class UnreliableModel:
+        model = "fake"
+
+        def run(self, *args, **kwargs):
+            return {
+                "claims": [{"page": 3, "text": "An invented unsupported answer."}],
+                "supported": True,
+                "complete": True,
+            }
+
+    result = local_answer(
+        "Who created the sample?",
+        Index([Page(3, "The sample is a synthetic measurement.")], "test"),
+        UnreliableModel(),
+        Trace(tmp_path, "test"),
+        2,
+    )
+    assert result["route"] == "evidence_only"
+    assert all("invented" not in c["text"] for c in result["claims"])
+    assert result["verification"] == "exact_excerpt_only"
+
+
+def test_followup_without_subject_requests_clarification(tmp_path):
+    result = local_answer(
+        "Who invented it?", Index([], "test"), None, Trace(tmp_path, "test"), 2
+    )
+    assert result["route"] == "ask_clarification"
+
+
+def test_explicit_arithmetic_uses_bounded_tool():
+    assert calculate("calculate 100 * (1 - 2.5 / 100)")["value"] == 97.5
+    with pytest.raises(ZeroDivisionError):
+        calculate("calculate 1 / 0")
+    with pytest.raises(ValueError):
+        calculate("calculate __import__('os')")
+
+
+def test_table_caption_header_rows_and_note_remain_together():
+    page = Page(
+        5,
+        "Table 2.1 Synthetic records\n\n"
+        "Item       Quantity\n\nA          2\n\nB          3\n\n"
+        "Source: fictional illustration, not field data.",
+    )
+    passages = Index([page], "synthetic").passages
+    assert len(passages) == 1
+    assert passages[0].kind == "table"
+    assert "Quantity" in passages[0].text
+    assert "not field data" in passages[0].text
+    assert passages[0].text in " ".join(page.text.split())
+
+
+def test_conflicting_definitions_request_clarification(tmp_path):
+    index = Index(
+        [
+            Page(1, "1.1 Incident\nAn incident is a test event."),
+            Page(2, "2.1 Incident\nAn incident is a production alarm."),
+        ],
+        "synthetic",
+    )
+    result = local_answer("What is an incident?", index, None, Trace(tmp_path, "test"), 2)
+    assert result["route"] == "ask_clarification"
+
+
+def test_external_evaluation_catches_a_fabricated_quote(tmp_path, monkeypatch):
+    suite = tmp_path / "cases.json"
+    suite.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "fabrication",
+                    "question": "Explain the sample.",
+                    "routes": ["evidence_only"],
+                    "pages": [2],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    document = tmp_path / "source.pdf"
+    document.write_bytes(b"synthetic")
+    import hashlib
+
+    fingerprint = hashlib.sha256(b"synthetic").hexdigest()
+    monkeypatch.setattr(
+        "evidence_guard.evaluation.load_pdf",
+        lambda *args: (
+            Index([Page(2, "A fictional sample.")], fingerprint),
+            False,
+        ),
+    )
+
+    def ask(*args, **kwargs):
+        return {
+            "route": "evidence_only",
+            "claims": [
+                {
+                    "page": 2,
+                    "text": "Fabricated source.",
+                    "quote": "Fabricated source.",
+                }
+            ],
+            "events": [{"kind": "finish", "elapsed_ms": 1}],
+        }
+
+    result = evaluate(suite, tmp_path, ask, document)
+    assert result["summary"]["passed"] == 0
+    assert result["summary"]["provenance_failures"] == 1
+    assert not result["manifest"]["document_changed_during_run"]
 
 
 def test_offline_demo_has_no_network_attempts(tmp_path, monkeypatch):

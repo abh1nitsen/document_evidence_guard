@@ -70,8 +70,10 @@ Gemma-2/3 instructions are merged into a user turn for their chat template.
 
 The harness validates the schema, retains the original question, and repairs
 explicit number or negation loss by restoring the original to the search plan.
-This mechanical guard cannot establish semantic equivalence or detect every lost
-qualifier. Several requirements can accompany one request. A definition request
+Explicit leading "why" or "explain why" requests also retain their causal task
+when the planner drifts into a different intent. This request-shape guard is
+document-independent; it cannot establish semantic equivalence or detect every
+lost qualifier in unrestricted wording. Several requirements can accompany one request. A definition request
 with additional requirements cannot use the canonical definition promotion path.
 Two proposed interpretations produce a focused choice before evidence assessment.
 

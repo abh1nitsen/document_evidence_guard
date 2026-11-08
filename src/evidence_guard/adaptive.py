@@ -298,6 +298,13 @@ def run(
                 schema=coverage_schema(missing, len(sentence_units(sources))),
             )
             supports = validate_supports(value, missing, sources)
+            trace.activity(
+                "writer",
+                "completed",
+                "Source selection received",
+                "Selected sentence IDs passed structural validation.",
+                model=model.model,
+            )
             shared = [
                 item["need"] for item in value["supports"] if item["need"] not in supports
             ]

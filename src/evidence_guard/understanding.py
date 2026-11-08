@@ -215,6 +215,22 @@ def understand(
         if not clean_queries:
             clean_queries = [question]
         plan["queries"] = clean_queries
+        # Preserve explicit causal operators when a model drifts into a different
+        # task. This is a request-shape guard, independent of document vocabulary.
+        causal = re.search(r"^\s*(?:please\s+)?why\b|\bexplain why\b", question, re.I)
+        if causal and plan["intent"] != "explanation" and not plan["choices"]:
+            plan["model_intent"] = plan["intent"]
+            plan["intent"] = "explanation"
+            plan["subject"] = question[:100]
+            plan["question"] = question
+            plan["queries"] = [question]
+            plan["needs"] = ["result", "mechanism"]
+            trace.log(
+                "rewrite_guard",
+                status="repaired",
+                reasons=["rewrite_dropped_causal_request"],
+                original_retained=True,
+            )
         minimum = {
             "definition": ["definition"],
             "explanation": ["result", "mechanism"],

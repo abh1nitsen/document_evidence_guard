@@ -246,3 +246,15 @@ def test_one_formula_cannot_complete_three_distinct_requirements():
         index.passages,
     )
     assert set(supports) == {"calculation"}
+
+
+def test_explicit_why_request_cannot_silently_become_methodology(tmp_path):
+    trace = Trace(tmp_path, "test")
+    question = "Why is Branch A's rating high?"
+    result = understand(question, Index([], "test"), Planner(plan()), trace, 2)
+    assert result["intent"] == "explanation"
+    assert result["normalized_query"] == question
+    assert result["needs"] == ["result", "mechanism"]
+    assert any(
+        "rewrite_dropped_causal_request" in e.get("reasons", []) for e in trace.events
+    )

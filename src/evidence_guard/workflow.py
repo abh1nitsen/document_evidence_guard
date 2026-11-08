@@ -8,6 +8,7 @@ from time import perf_counter
 from .evidence import Index, Passage, definition_target
 from .models import LocalModel, ModelError
 from .telemetry import Trace
+from .understanding import definition_covered, understand
 
 CONTRACT_VERSION = "extractive-v2"
 SELECT = (
@@ -169,6 +170,45 @@ def release_evidence(claims: list[dict], trace: Trace, method: str) -> dict:
     }
 
 
+def release_definition(definition: dict, trace: Trace) -> dict:
+    pages = [definition["page"]]
+    trace.activity(
+        "context",
+        "completed",
+        "Keep the complete definition",
+        "Preserve the source paragraph and its qualifiers.",
+        pages=pages,
+    )
+    trace.activity(
+        "writer",
+        "completed",
+        "Return the source definition",
+        "Copy source text without generating new claims.",
+    )
+    trace.activity(
+        "verifier",
+        "completed",
+        "Verify source provenance",
+        "The heading and paragraph identify the requested term.",
+        verification="exact_source_definition",
+    )
+    trace.log("first_verified", pages=pages)
+    trace.log("route", decision="skip", reason="exact_source_definition")
+    trace.activity(
+        "router",
+        "completed",
+        "Release the cited definition",
+        "The source explicitly defines this term.",
+    )
+    return {
+        "route": "answer_local",
+        "claims": [definition],
+        "verification": "exact_source_definition",
+        "topic": definition["heading"],
+        "contract": CONTRACT_VERSION,
+    }
+
+
 def local_answer(
     question: str,
     index: Index,
@@ -176,6 +216,7 @@ def local_answer(
     trace: Trace,
     budget: float,
     topic: str | None = None,
+    planner: LocalModel | None = None,
 ) -> dict:
     deadline = perf_counter() + budget
     trace.log("contract", version=CONTRACT_VERSION)
@@ -288,41 +329,7 @@ def local_answer(
                 "Please specify the section or page.",
             }
         if definition:
-            trace.activity(
-                "context",
-                "completed",
-                "Keep the complete definition",
-                "Preserve the definition paragraph and its qualifiers.",
-                pages=pages,
-            )
-            trace.activity(
-                "writer",
-                "completed",
-                "Return the source definition",
-                "Copy source text without generating new claims.",
-            )
-            trace.activity(
-                "verifier",
-                "completed",
-                "Verify source provenance",
-                "The heading and paragraph identify the requested term.",
-                verification="exact_source_definition",
-            )
-            trace.log("first_verified", pages=pages)
-            trace.log("route", decision="skip", reason="exact_source_definition")
-            trace.activity(
-                "router",
-                "completed",
-                "Release the cited definition",
-                "The source explicitly defines this term.",
-            )
-            return {
-                "route": "answer_local",
-                "claims": [definition],
-                "verification": "exact_source_definition",
-                "topic": definition["heading"],
-                "contract": CONTRACT_VERSION,
-            }
+            return release_definition(definition, trace)
         suggestions = index.suggestions(target)
         if suggestions:
             trace.log("route", decision="skip", reason="ambiguous_term")
@@ -332,6 +339,26 @@ def local_answer(
                 "message": "Did you mean " + " or ".join(suggestions) + "?",
                 "suggestions": suggestions,
             }
+    plan = None
+    if planner is not None and deadline - perf_counter() > 1:
+        plan = understand(
+            question, index, planner, trace, min(12, deadline - perf_counter())
+        )
+        if (
+            plan
+            and plan["intent"] == "definition"
+            and definition_covered(question, plan["term"], index)
+        ):
+            definition = index.definition("Define " + plan["term"])
+            if definition:
+                trace.log(
+                    "definition_promotion",
+                    reason="single_definition_request_covered",
+                    pages=[definition["page"]],
+                    model=planner.model,
+                )
+                return release_definition(definition, trace)
+    rewrites = plan["queries"] if plan else []
     tried = set()
     sources = []
     last_error = None
@@ -346,7 +373,11 @@ def local_answer(
             f"Retrieve passage batch {attempt}",
             "Rank paragraphs by terms, glossary aliases and headings.",
         )
-        ranked = index.search(question, limit=limit)
+        ranked = (
+            index.search_queries(question, rewrites, limit)
+            if rewrites
+            else (index.search(question, limit=limit))
+        )
         added = []
         loaded_chars = 0
         for passage in ranked:
@@ -360,7 +391,7 @@ def local_answer(
             "fetch",
             start,
             attempt=attempt,
-            strategy="passage_search",
+            strategy="semantic_query_fusion" if rewrites else "passage_search",
             pages=sorted({p.page for p in sources}),
             new_pages=sorted({p.page for p in added}),
             passage_ids=[p.id for p in added],

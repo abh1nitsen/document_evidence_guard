@@ -1,6 +1,6 @@
 # Drishti Evidence Guard
 
-Version 0.2.1 provides a local HTML console, exact document definitions, bounded
+Version 0.3.0 provides a local HTML console, exact document definitions, bounded
 arithmetic, and a local SLM that selects evidence passages. Every report response
 has an explicit release contract and a trace of each workflow role.
 
@@ -37,7 +37,8 @@ macOS execution has not been tested.
 
 Open [the local console](http://127.0.0.1:8787/). Agent activity streams actions,
 operational reasons, page IDs and status changes while a question runs. The roles
-execute sequentially and share one local model. Route history lives in the current
+execute sequentially with an evidence selector and an optional separate query
+planner. Route history lives in the current
 tab. Metadata persists in the external SQLite database without questions, answers,
 excerpts or credentials. Source links open the configured PDF in the same local
 server. Extracted text and returned evidence remain confidential local data.
@@ -47,6 +48,48 @@ For a command-line question, omit the positional question to enter it interactiv
 ```sh
 uv run --locked evidence-guard --data-dir "EXTERNAL_PRIVATE_DIR" ask --pdf "EXTERNAL_REPORT.pdf"
 ```
+
+## Optional local semantic planner
+
+The optional Gemma stage interprets conversational requests before retrieval.
+Exact definitions and arithmetic bypass this stage. Other requests send only the
+question and up to ten short document headings to the local planner. Its bounded
+JSON output contains an intent, a term, up to two retrieval queries and a reason
+code. The console displays this interpretation and each model's activity.
+
+The existing Windows model used for validation is Gemma-2-2B-Instruct Q4_K_M,
+SHA-256 `e0aee85060f168f0f2d8473d7ea41ce2f3230c1bc1374847505ea599288a7787`.
+Keep it outside Git and run a second loopback server:
+
+```sh
+llama-server -m "EXTERNAL_GEMMA.gguf" --host 127.0.0.1 --port 18090 -c 4096 -np 1 --alias gemma-2-2b-it
+uv run --locked evidence-guard --data-dir "EXTERNAL_PRIVATE_DIR" ui --pdf "EXTERNAL_REPORT.pdf" --planner-url http://127.0.0.1:18090/v1
+```
+
+Gemma-2/3 instructions are merged into a user turn for their chat template.
+The original query remains in reciprocal-rank fusion and its top retrieval
+candidate is retained. Invalid plans, timeouts, or dropped explicit numbers or
+negation fall back to the original query. This validation does not establish
+semantic equivalence of rewrites; general results still require source review.
+Canonical definition promotion additionally requires that the original request
+contains the term or glossary alias, has no unhandled material qualifiers, and
+matches a unique source definition. The planner cannot generate answer claims.
+
+Planner latency and tokens are logged separately from retrieval and selection.
+Successful plans are transient browser/CLI output; persistent telemetry stores
+only reason codes and counts. Evaluation reports may contain the plans and
+remain outside Git. With page labels, evaluation compares original and fused
+top-six reference-page ranks. A small development comparison measures behavior,
+not general semantic accuracy or production savings.
+
+The initial eight-case private development run passed seven automated checks.
+All three conversational definitions were released from exact source definitions;
+one limitations retrieval missed its labeled page. Across six page-labeled plans,
+reference-page rank improved in two cases, stayed the same in three and remained
+outside the top six in one. Three selector calls timed out and used labeled
+retrieval fallbacks. Mixed-workload median was 9.40 seconds and p95 19.38 seconds.
+These figures describe this Windows run and its small development suite only.
+They do not establish production readiness or a reduction in hosted spend.
 
 ## Release contracts
 

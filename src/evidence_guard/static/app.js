@@ -24,7 +24,7 @@ const routeLabels = {
   calculation_local: ["Calculated locally", "local"],
 };
 const reasons = {
-  exact_source_definition: "The report explicitly defines the requested term. No model call was needed.",
+  exact_source_definition: "The report explicitly defines the requested term. The source definition was copied directly.",
   deterministic_arithmetic: "An explicit arithmetic expression was evaluated locally.",
   interpretation_requires_review: "The source passages are available, but a complete interpretation requires review.",
   missing_conversation_subject: "The follow-up does not have an established subject.",
@@ -63,7 +63,9 @@ function describe(event) {
     case "activity": return `${roleNames[event.role] || event.role} · ${event.action} · ${event.reason}`;
     case "index_load": return `Report index ${event.cache_hit ? "reused" : "built"}${duration}`;
     case "fetch": return `Fetch ${event.attempt} · ${plain(event.strategy || "synthetic")}${pages}${duration}`;
-    case "local_model": return `Local model · ${plain(event.stage)}${duration}`;
+    case "local_model": return `Local model · ${event.model || "selector"} · ${plain(event.stage)}${duration}`;
+    case "query_understanding": return `Query planner · ${plain(event.status)} · ${plain(event.reason)} · original question retained`;
+    case "definition_promotion": return `Definition release · ${plain(event.reason)}${pages}`;
     case "local_issue": return `Local issue · ${plain(event.code)}`;
     case "first_verified": return `First evidence verified${pages}`;
     case "route": {
@@ -113,6 +115,7 @@ function drawAgents(run) {
         : run && !run.running ? "The route completed without invoking this role."
         : "The controller schedules this role when its input is ready."
     ), "why"));
+    if (last?.model) card.append(element("p", `Model · ${last.model}`, "why"));
     if (last?.pages?.length) card.append(element("p", `Pages ${last.pages.join(", ")}`, "why"));
     if (last) {
       let timing = `Updated at ${milliseconds(last.elapsed_ms)}`;
@@ -143,6 +146,15 @@ function showRun(run) {
   if (run.verification) panel.append(element("p", verification[run.verification] || plain(run.verification), "proof"));
   if (run.message) panel.append(element("p", run.message, "summary"));
   if (run.selection_method) panel.append(element("p", `Selection · ${plain(run.selection_method)}`, "summary"));
+  if (run.query_plan) {
+    const plan = run.query_plan;
+    panel.append(element("h3", "Search interpretation"));
+    panel.append(element("p", `${plan.model} · ${plain(plan.intent)} · ${plain(plan.reason)}`, "summary"));
+    if (plan.term) panel.append(element("p", `Interpreted term · ${plan.term}`, "summary"));
+    const queries = element("ul");
+    for (const query of plan.queries) queries.append(element("li", query));
+    panel.append(queries, element("p", "The original question is retained in retrieval.", "summary"));
+  }
   if (run.calculation) {
     panel.append(element("h3", "Calculation"));
     panel.append(element("p", `${run.calculation.expression} = ${run.calculation.value}`, "answer"));

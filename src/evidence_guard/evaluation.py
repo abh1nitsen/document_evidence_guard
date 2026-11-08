@@ -71,6 +71,26 @@ def evaluate(suite: Path, data_dir: Path, ask, document: Path) -> dict:
     rows = []
     for case in cases:
         result = ask(case["question"], topic=case.get("topic"))
+        comparison = None
+        plan = result.get("query_plan")
+        if plan and case.get("pages"):
+            original = index.search(plan["original_question"], limit=6)
+            fused = index.search_queries(
+                plan["original_question"],
+                plan["queries"],
+                limit=6,
+            )
+            expected = set(case["pages"])
+            comparison = {
+                "original_reference_rank": next(
+                    (rank for rank, p in enumerate(original, 1) if p.page in expected),
+                    None,
+                ),
+                "fused_reference_rank": next(
+                    (rank for rank, p in enumerate(fused, 1) if p.page in expected),
+                    None,
+                ),
+            }
         claims = result.get("claims", [])
         text = " ".join(claim.get("text", "") for claim in claims)
         issues = []
@@ -117,6 +137,7 @@ def evaluate(suite: Path, data_dir: Path, ask, document: Path) -> dict:
                 "elapsed_ms": finish.get("elapsed_ms", 0),
                 "result": result,
                 "label": case,
+                "retrieval_comparison": comparison,
             }
         )
     latency = sorted(row["elapsed_ms"] for row in rows)
@@ -150,6 +171,14 @@ def evaluate(suite: Path, data_dir: Path, ask, document: Path) -> dict:
                 ),
                 None,
             ),
+            "planner_alias": next(
+                (
+                    e.get("planner_model")
+                    for e in rows[0]["result"]["events"]
+                    if e["kind"] == "start"
+                ),
+                None,
+            ),
         },
         "summary": {
             "passed": sum(row["passed"] for row in rows),
@@ -176,6 +205,21 @@ def evaluate(suite: Path, data_dir: Path, ask, document: Path) -> dict:
             "source_contract_failures": sum(
                 "extractive_contract" in row["issues"] for row in rows
             ),
+            "planner_accepted_cases": sum(
+                bool(row["result"].get("query_plan")) for row in rows
+            ),
+            "planner_fallback_cases": sum(
+                any(
+                    e["kind"] == "query_understanding" and e.get("status") == "fallback"
+                    for e in row["result"]["events"]
+                )
+                for row in rows
+            ),
+            "retrieval_comparisons": [
+                {"id": row["id"], **row["retrieval_comparison"]}
+                for row in rows
+                if row["retrieval_comparison"]
+            ],
             "scope": "Automated route, content and source-contract checks. "
             "Pass rate is not an independently measured semantic accuracy.",
         },

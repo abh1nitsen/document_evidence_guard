@@ -46,6 +46,7 @@ class Trace:
         self.started = perf_counter()
         self.events: list[dict] = []
         self.on_event = on_event
+        self.query_plan: dict | None = None
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS events ("

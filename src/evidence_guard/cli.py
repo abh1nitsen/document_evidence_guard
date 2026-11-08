@@ -40,6 +40,8 @@ def main() -> None:
         command.add_argument("--local-url", default="http://127.0.0.1:8080/v1")
         command.add_argument("--local-model", default="qwen2.5-1.5b")
         command.add_argument("--seconds", type=float, default=35)
+        command.add_argument("--planner-url", help="Loopback semantic query planner")
+        command.add_argument("--planner-model", default="gemma-2-2b-it")
     ui.add_argument("--port", type=int, default=8787)
     ui.add_argument("--enable-live-demo", action="store_true")
     ask.add_argument("question", nargs="?", help="Omit to enter outside shell history")
@@ -60,6 +62,11 @@ def main() -> None:
         if args.command in {"ask", "ui", "evaluate"}:
             pdf = outside_repository(args.pdf)
             model = LocalModel(args.local_url, args.local_model)
+            planner = (
+                LocalModel(args.planner_url, args.planner_model)
+                if (args.planner_url)
+                else None
+            )
             if not math.isfinite(args.seconds) or args.seconds <= 0:
                 raise ValueError("Local seconds must be finite and positive.")
 
@@ -80,6 +87,7 @@ def main() -> None:
                     model=model.model,
                     model_identity="server_alias_only",
                     budget_seconds=args.seconds,
+                    planner_model=planner.model if planner else None,
                 )
                 start = perf_counter()
                 trace.activity(
@@ -103,7 +111,17 @@ def main() -> None:
                     "The local index is available for retrieval.",
                     pages_total=len(index.pages),
                 )
-                answer = local_answer(question, index, model, trace, args.seconds, topic)
+                answer = local_answer(
+                    question,
+                    index,
+                    model,
+                    trace,
+                    args.seconds,
+                    topic,
+                    planner,
+                )
+                if trace.query_plan:
+                    answer["query_plan"] = trace.query_plan
                 trace.log("finish", route=answer["route"])
                 return dict(answer, trace_id=trace.id, events=trace.events)
 

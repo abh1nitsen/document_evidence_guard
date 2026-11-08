@@ -1,6 +1,7 @@
 """JSON chat adapters. The document workflow accepts a loopback server only."""
 
 import json
+import re
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -52,7 +53,7 @@ def chat(
         body["reasoning_effort"] = "low"
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "drishti-evidence-guard/0.2.1",
+        "User-Agent": "drishti-evidence-guard/0.3.0",
     }
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -115,6 +116,15 @@ class LocalModel:
             {"role": "system", "content": instruction},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ]
+        if re.search(r"gemma[-_ ]?[23]\b", self.model, re.IGNORECASE):
+            messages = [
+                {
+                    "role": "user",
+                    "content": instruction
+                    + "\n\nInput data:\n"
+                    + json.dumps(payload, ensure_ascii=False),
+                }
+            ]
         self.last_usage = None
         result = chat(self.endpoint, self.model, messages, timeout, schema=schema)
         usage = result.usage if isinstance(result.usage, dict) else {}

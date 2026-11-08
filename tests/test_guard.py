@@ -10,6 +10,7 @@ from evidence_guard.evidence import Index, Page, definition_target
 from evidence_guard.models import ChatResult, LocalModel, ModelError
 from evidence_guard.models import chat as model_chat
 from evidence_guard.telemetry import Trace, cost, summarize
+from evidence_guard.understanding import definition_covered, understand
 from evidence_guard.workflow import anchored_claims, calculate, local_answer
 
 
@@ -389,6 +390,81 @@ def test_external_evaluation_catches_a_fabricated_quote(tmp_path, monkeypatch):
     assert result["summary"]["passed"] == 0
     assert result["summary"]["provenance_failures"] == 1
     assert not result["manifest"]["document_changed_during_run"]
+
+
+def test_gemma_2_prompt_uses_a_single_user_turn(monkeypatch):
+    captured = []
+
+    def fake_chat(endpoint, model, messages, timeout, **kwargs):
+        captured.extend(messages)
+        return ChatResult('{"ok":true}', {}, "test")
+
+    monkeypatch.setattr("evidence_guard.models.chat", fake_chat)
+    LocalModel("http://127.0.0.1:18090/v1", "gemma-2-2b-it").run(
+        "Select a query.",
+        {"question": "A synthetic question"},
+        1,
+    )
+    assert [message["role"] for message in captured] == ["user"]
+    assert "Select a query." in captured[0]["content"]
+
+
+def test_semantic_term_can_promote_only_a_covered_definition(tmp_path):
+    class Planner:
+        model = "gemma-2-2b-it"
+
+        def run(self, *args, **kwargs):
+            return {
+                "intent": "definition",
+                "term": "Incident",
+                "queries": ["Incident definition"],
+                "reason": "definition_term",
+            }
+
+    index = Index([Page(2, "1.2 Incident\nIncident refers to a test event.")], "test")
+    trace = Trace(tmp_path, "test")
+    result = local_answer(
+        "What do they mean by incident here?", index, None, trace, 2, planner=Planner()
+    )
+    assert result["route"] == "answer_local"
+    assert trace.query_plan["model"] == "gemma-2-2b-it"
+    assert not definition_covered("Explain incident in aviation", "Incident", index)
+    assert not definition_covered(
+        "What is incident and who handles it?", "Incident", index
+    )
+
+
+@pytest.mark.parametrize(
+    "question,query,reason",
+    [
+        ("Compare 2025 and 2030.", "Compare 2025 forecasts.", "rewrite_dropped_numbers"),
+        ("Was it not tested?", "testing history", "rewrite_dropped_negation"),
+    ],
+)
+def test_unsafe_rewrite_falls_back_to_original(tmp_path, question, query, reason):
+    class Planner:
+        model = "gemma-2-2b-it"
+
+        def run(self, *args, **kwargs):
+            return {
+                "intent": "fact",
+                "term": "",
+                "queries": [query],
+                "reason": "keyword_focus",
+            }
+
+    trace = Trace(tmp_path, "test")
+    assert understand(question, Index([], "test"), Planner(), trace, 1) is None
+    assert trace.query_plan is None
+    assert any(event.get("reason") == reason for event in trace.events)
+
+
+def test_query_fusion_keeps_original_top_candidate():
+    index = Index(
+        [Page(1, "A rewritten synonym."), Page(2, "An original anchor.")], "test"
+    )
+    found = index.search_queries("anchor", ["synonym"], limit=1)
+    assert found[0].page == 2
 
 
 def test_offline_demo_has_no_network_attempts(tmp_path, monkeypatch):

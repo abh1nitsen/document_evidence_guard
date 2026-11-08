@@ -267,6 +267,24 @@ class Index:
         ranked.sort(key=lambda item: (-item[0], item[1].page, item[1].id))
         return [passage for _, passage in ranked[:limit]]
 
+    def search_queries(
+        self, original: str, rewrites: list[str], limit: int
+    ) -> list[Passage]:
+        scores = Counter()
+        passages = {}
+        original_hits = self.search(original, limit)
+        for query in dict.fromkeys([original] + rewrites):
+            for rank, passage in enumerate(self.search(query, limit), 1):
+                scores[passage.id] += 1 / (60 + rank)
+                passages[passage.id] = passage
+        ordered = sorted(
+            passages, key=lambda key: (-scores[key], passages[key].page, key)
+        )
+        chosen = [passages[key] for key in ordered[:limit]]
+        if original_hits and original_hits[0].id not in {p.id for p in chosen}:
+            chosen[-1] = original_hits[0]
+        return chosen
+
     def fetch(self, query: str, limit: int = 3) -> list[Page]:
         words = terms(query)
         target = definition_target(query)

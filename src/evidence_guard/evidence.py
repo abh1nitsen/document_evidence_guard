@@ -285,6 +285,33 @@ class Index:
             chosen[-1] = original_hits[0]
         return chosen
 
+    def contextual_candidates(self, ranked: list[Passage], limit: int) -> list[Passage]:
+        """Keep nearby prose around the two strongest hits within the same section."""
+        positions = {p.id: i for i, p in enumerate(self.passages)}
+        chosen = list(ranked[:2])
+        for anchor in ranked[:2]:
+            position = positions[anchor.id]
+            for direction in (-1, 1):
+                if direction == -1 and anchor.section_start:
+                    continue
+                for step in (1, 2):
+                    offset = position + direction * step
+                    if not 0 <= offset < len(self.passages):
+                        break
+                    candidate = self.passages[offset]
+                    if abs(candidate.page - anchor.page) > 1:
+                        break
+                    if direction == 1 and candidate.section_start:
+                        break
+                    if candidate.kind == "paragraph" and not candidate.text.startswith(
+                        "Source:"
+                    ):
+                        chosen.append(candidate)
+                    if direction == -1 and candidate.section_start:
+                        break
+        chosen.extend(ranked)
+        return list({p.id: p for p in chosen}.values())[:limit]
+
     def fetch(self, query: str, limit: int = 3) -> list[Page]:
         words = terms(query)
         target = definition_target(query)

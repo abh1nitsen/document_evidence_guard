@@ -1,6 +1,6 @@
 # Drishti Evidence Guard
 
-Version 0.3.0 provides a local HTML console, exact document definitions, bounded
+Version 0.3.1 provides a local HTML console, exact document definitions, bounded
 arithmetic, and a local SLM that selects evidence passages. Every report response
 has an explicit release contract and a trace of each workflow role.
 
@@ -53,9 +53,24 @@ uv run --locked evidence-guard --data-dir "EXTERNAL_PRIVATE_DIR" ask --pdf "EXTE
 
 The optional Gemma stage interprets conversational requests before retrieval.
 Exact definitions and arithmetic bypass this stage. Other requests send only the
-question and up to ten short document headings to the local planner. Its bounded
+question, up to six short document headings and two preliminary excerpt previews
+(100 characters each) to the local planner. Its bounded
 JSON output contains an intent, a term, up to two retrieval queries and a reason
 code. The console displays this interpretation and each model's activity.
+
+The versioned `intent-search-v2-compact` prompt distinguishes definitions, explanations,
+comparisons, procedures, limitations, calculations and facts. It asks for
+complementary subject and relationship queries, preserves qualifiers and warns
+against accepting a question's premise. Examples use fictional entities.
+The selector also receives the requested intent and instructions to seek the
+corresponding evidence, rather than merely shared words. These instructions are
+model guidance, not a proof of relevance or completeness.
+
+For relationship-based intents, retrieval includes nearby prose around the two
+strongest hits, across at most one page boundary and without crossing a new
+numbered section. The same six-passage and 6,000-character budgets apply. This
+helps preserve table explanations and continued paragraphs. Source-only release
+contracts still apply even when explanatory evidence is retrieved.
 
 The existing Windows model used for validation is Gemma-2-2B-Instruct Q4_K_M,
 SHA-256 `e0aee85060f168f0f2d8473d7ea41ce2f3230c1bc1374847505ea599288a7787`.
@@ -82,7 +97,7 @@ remain outside Git. With page labels, evaluation compares original and fused
 top-six reference-page ranks. A small development comparison measures behavior,
 not general semantic accuracy or production savings.
 
-The initial eight-case private development run passed seven automated checks.
+The initial v0.3.0 eight-case private development run passed seven automated checks.
 All three conversational definitions were released from exact source definitions;
 one limitations retrieval missed its labeled page. Across six page-labeled plans,
 reference-page rank improved in two cases, stayed the same in three and remained
@@ -90,6 +105,18 @@ outside the top six in one. Three selector calls timed out and used labeled
 retrieval fallbacks. Mixed-workload median was 9.40 seconds and p95 19.38 seconds.
 These figures describe this Windows run and its small development suite only.
 They do not establish production readiness or a reduction in hosted spend.
+
+During v0.3.1 development, an eleven-case run with the compact prompt and a
+12-second planner allowance passed seven checks. Its failures included fact
+retrieval, limitations and planner timeouts. With the final 16-second planner
+allowance, a three-case targeted run passed the definition and explanation checks
+(two of three overall). The comparison plan dropped explicit numbers and was
+rejected; original-query fallback still retrieved the score evidence. The Mumbai
+explanation included the next-page aggregation paragraph through context expansion,
+but its selector timed out and used the labeled source fallback. Targeted median
+latency was 12.85 seconds and p95 18.82 seconds. No source-provenance or extractive
+contract failures were observed in these runs. Broad semantic coverage remains
+unestablished; a prompt change alone does not solve retrieval or runtime limits.
 
 ## Release contracts
 
@@ -128,7 +155,8 @@ The loop tries at most two batches of up to six passages with a 6,000-character
 source budget. The SLM sees short, explicitly truncated previews and integer
 selection IDs. Returned evidence retains the complete selected source passage.
 Only unseen passages justify another retrieval. Model errors stop selection
-and can fall back to retrieved evidence. Each model call has a 12-second ceiling
+and can fall back to retrieved evidence. Planner requests use up to 16 seconds;
+selector requests use up to 12 seconds, each limited by the remaining budget
 inside the overall question budget, which defaults to 35 seconds. Runtime
 performance depends on hardware and model configuration.
 
@@ -151,6 +179,7 @@ Store a labeled JSON array outside Git, with entries shaped like this example:
 ```
 
 The optional `topic` field supplies an established subject for a follow-up.
+A string `intent` label checks the semantic planner's classification when required.
 A numeric `calculation` field specifies an expected arithmetic result.
 Run the suite through the same entry point used by the console:
 

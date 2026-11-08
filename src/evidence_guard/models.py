@@ -53,7 +53,7 @@ def chat(
         body["reasoning_effort"] = "low"
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "drishti-evidence-guard/0.3.0",
+        "User-Agent": "drishti-evidence-guard/0.3.1",
     }
     if key:
         headers["Authorization"] = f"Bearer {key}"

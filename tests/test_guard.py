@@ -467,6 +467,70 @@ def test_query_fusion_keeps_original_top_candidate():
     assert found[0].page == 2
 
 
+def test_context_expansion_crosses_pages_but_stops_at_new_section():
+    index = Index(
+        [
+            Page(
+                1,
+                "1.1 Rating\nThe branch rating uses window scores.\n\n"
+                "Table 1. Window scores\nA  90\nB  100",
+            ),
+            Page(
+                2,
+                "Windows without deductions stay at 100 and increase the average.\n\n"
+                "1.2 Forecast\nUnrelated forecast details.",
+            ),
+        ],
+        "synthetic",
+    )
+    table = next(p for p in index.passages if p.kind == "table")
+    found = index.contextual_candidates([table], 6)
+    assert any("increase the average" in p.text for p in found)
+    assert not any("Unrelated" in p.text for p in found)
+    forecast = next(p for p in index.passages if p.heading == "Forecast")
+    assert index.contextual_candidates([forecast], 6) == [forecast]
+
+
+def test_explanation_request_receives_surrounding_prose(tmp_path):
+    class Planner:
+        model = "fake-planner"
+
+        def run(self, *args, **kwargs):
+            return {
+                "intent": "explanation",
+                "term": "",
+                "queries": ["Branch rating results", "Branch rating calculation"],
+                "reason": "keyword_focus",
+            }
+
+    class Selector:
+        model = "fake-selector"
+
+        def run(self, instruction, payload, timeout, schema=None):
+            assert payload["requested_intent"] == "explanation"
+            explanation = next(p for p in payload["passages"] if "increase" in p["text"])
+            return {"status": "relevant", "selected_ids": [explanation["id"]]}
+
+    index = Index(
+        [
+            Page(
+                1,
+                "1.1 Rating\nThe branch rating uses window scores.\n\n"
+                "Table 1. Branch rating\nA  90\nB  100",
+            ),
+            Page(2, "Windows without deductions stay at 100 and increase the average."),
+        ],
+        "synthetic",
+    )
+    trace = Trace(tmp_path, "test")
+    result = local_answer(
+        "Why is the branch rating high?", index, Selector(), trace, 2, planner=Planner()
+    )
+    assert result["route"] == "evidence_only"
+    assert any("increase the average" in p["text"] for p in result["claims"])
+    assert any(e.get("adjacent_context") for e in trace.events)
+
+
 def test_offline_demo_has_no_network_attempts(tmp_path, monkeypatch):
     def fail(*args, **kwargs):
         pytest.fail("Offline demo attempted a network request")

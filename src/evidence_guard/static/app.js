@@ -62,7 +62,7 @@ function describe(event) {
   switch (event.kind) {
     case "activity": return `${roleNames[event.role] || event.role} · ${event.action} · ${event.reason}`;
     case "index_load": return `Report index ${event.cache_hit ? "reused" : "built"}${duration}`;
-    case "fetch": return `Fetch ${event.attempt} · ${plain(event.strategy || "synthetic")}${pages}${duration}`;
+    case "fetch": return `Fetch ${event.attempt} · ${plain(event.strategy || "synthetic")}${event.adjacent_context ? " · surrounding prose included" : ""}${pages}${duration}`;
     case "local_model": return `Local model · ${event.model || "selector"} · ${plain(event.stage)}${duration}`;
     case "query_understanding": return `Query planner · ${plain(event.status)} · ${plain(event.reason)} · original question retained`;
     case "definition_promotion": return `Definition release · ${plain(event.reason)}${pages}`;
@@ -319,7 +319,7 @@ fetch("/api/config").then((response) => response.json()).then((config) => {
   byId("live").hidden = !config.live_enabled;
   byId("build-info").textContent = `v${config.version} · ${config.contract}`;
   if (config.evaluation) {
-    byId("evaluation-summary").textContent = `Latest local evaluation: ${config.evaluation.passed}/${config.evaluation.total} automated checks passed. Median ${milliseconds(config.evaluation.median_ms)} · p95 ${milliseconds(config.evaluation.p95_ms)}. Cases with model failures: ${config.evaluation.model_failure_cases ?? "unrecorded"}. Relevance requires separate review.`;
+    byId("evaluation-summary").textContent = `Latest local evaluation: ${config.evaluation.passed}/${config.evaluation.total} automated checks passed. Median ${milliseconds(config.evaluation.median_ms)} · p95 ${milliseconds(config.evaluation.p95_ms)}. Cases with selector failures: ${config.evaluation.model_failure_cases ?? "unrecorded"}; planner fallbacks: ${config.evaluation.planner_fallback_cases ?? "unrecorded"}. Relevance requires separate review.`;
     byId("evaluation-summary").hidden = false;
   }
 }).catch(() => {});

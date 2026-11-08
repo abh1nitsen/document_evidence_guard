@@ -67,6 +67,8 @@ def evaluate(suite: Path, data_dir: Path, ask, document: Path) -> dict:
             or not math.isfinite(case["calculation"])
         ):
             raise ValueError("Calculation labels must be finite numbers.")
+        if "intent" in case and not isinstance(case["intent"], str):
+            raise ValueError("Expected planner intent must be a string.")
         seen.add(case["id"])
     rows = []
     for case in cases:
@@ -94,6 +96,8 @@ def evaluate(suite: Path, data_dir: Path, ask, document: Path) -> dict:
         claims = result.get("claims", [])
         text = " ".join(claim.get("text", "") for claim in claims)
         issues = []
+        if case.get("intent") and (plan or {}).get("intent") != case["intent"]:
+            issues.append("planner_intent")
         if result["route"] not in case["routes"]:
             issues.append("route")
         if any(

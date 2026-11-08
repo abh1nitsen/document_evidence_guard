@@ -409,17 +409,25 @@ def test_gemma_2_prompt_uses_a_single_user_turn(monkeypatch):
     assert "Select a query." in captured[0]["content"]
 
 
+def request_plan(intent, subject, queries, needs, question=None, choices=None):
+    return {
+        "intent": intent,
+        "subject": subject,
+        "question": question or queries[0],
+        "needs": needs,
+        "queries": queries,
+        "choices": choices or [],
+    }
+
+
 def test_semantic_term_can_promote_only_a_covered_definition(tmp_path):
     class Planner:
         model = "gemma-2-2b-it"
 
         def run(self, *args, **kwargs):
-            return {
-                "intent": "definition",
-                "term": "Incident",
-                "queries": ["Incident definition"],
-                "reason": "definition_term",
-            }
+            return request_plan(
+                "definition", "Incident", ["Incident definition"], ["definition"]
+            )
 
     index = Index([Page(2, "1.2 Incident\nIncident refers to a test event.")], "test")
     trace = Trace(tmp_path, "test")
@@ -441,22 +449,21 @@ def test_semantic_term_can_promote_only_a_covered_definition(tmp_path):
         ("Was it not tested?", "testing history", "rewrite_dropped_negation"),
     ],
 )
-def test_unsafe_rewrite_falls_back_to_original(tmp_path, question, query, reason):
+def test_unsafe_rewrite_preserves_intent_and_repairs_with_original(
+    tmp_path, question, query, reason
+):
     class Planner:
         model = "gemma-2-2b-it"
 
         def run(self, *args, **kwargs):
-            return {
-                "intent": "fact",
-                "term": "",
-                "queries": [query],
-                "reason": "keyword_focus",
-            }
+            return request_plan("fact", "Testing", [query], ["result"])
 
     trace = Trace(tmp_path, "test")
-    assert understand(question, Index([], "test"), Planner(), trace, 1) is None
-    assert trace.query_plan is None
-    assert any(event.get("reason") == reason for event in trace.events)
+    result = understand(question, Index([], "test"), Planner(), trace, 1)
+    assert result["intent"] == "fact"
+    assert result["normalized_query"] == question
+    assert result["queries"][0] == question
+    assert any(reason in event.get("reasons", []) for event in trace.events)
 
 
 def test_query_fusion_keeps_original_top_candidate():
@@ -496,20 +503,29 @@ def test_explanation_request_receives_surrounding_prose(tmp_path):
         model = "fake-planner"
 
         def run(self, *args, **kwargs):
-            return {
-                "intent": "explanation",
-                "term": "",
-                "queries": ["Branch rating results", "Branch rating calculation"],
-                "reason": "keyword_focus",
-            }
+            return request_plan(
+                "explanation",
+                "Branch rating",
+                ["Branch rating results", "Branch rating calculation"],
+                ["result", "mechanism"],
+            )
 
     class Selector:
         model = "fake-selector"
 
         def run(self, instruction, payload, timeout, schema=None):
-            assert payload["requested_intent"] == "explanation"
-            explanation = next(p for p in payload["passages"] if "increase" in p["text"])
-            return {"status": "relevant", "selected_ids": [explanation["id"]]}
+            explanation = next(
+                p
+                for e in payload["excerpts"]
+                for p in e["sentences"]
+                if "increase" in p["text"]
+            )
+            return {
+                "supports": [
+                    {"need": need, "ids": [explanation["id"]]}
+                    for need in payload["needs"]
+                ]
+            }
 
     index = Index(
         [

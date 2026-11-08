@@ -1,9 +1,12 @@
 [project]
 name = "drishti-evidence-guard"
-version = "0.3.1"
+version = "0.4.0"
 description = "Local-first document evidence checks and escalation telemetry"
 requires-python = ">=3.11"
-dependencies = ["pypdf>=6,<7"]
+dependencies = [
+    "pypdf>=6,<7",
+    "snowballstemmer>=3,<4",
+]
 
 [project.scripts]
 evidence-guard = "evidence_guard.cli:main"

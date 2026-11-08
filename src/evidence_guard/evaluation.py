@@ -69,6 +69,22 @@ def evaluate(suite: Path, data_dir: Path, ask, document: Path) -> dict:
             raise ValueError("Calculation labels must be finite numbers.")
         if "intent" in case and not isinstance(case["intent"], str):
             raise ValueError("Expected planner intent must be a string.")
+        for key in ("coverage_required", "coverage_missing"):
+            if key in case and (
+                not isinstance(case[key], list)
+                or any(not isinstance(v, str) for v in case[key])
+            ):
+                raise ValueError("Coverage labels must be arrays of strings.")
+        if "routing_reason" in case and not isinstance(case["routing_reason"], str):
+            raise ValueError("Routing reason must be a string.")
+        labels = case.get("need_contains", {})
+        if not isinstance(labels, dict) or any(
+            not isinstance(k, str)
+            or not isinstance(v, list)
+            or any(not isinstance(s, str) for s in v)
+            for k, v in labels.items()
+        ):
+            raise ValueError("Per-requirement content labels must map names to strings.")
         seen.add(case["id"])
     rows = []
     for case in cases:
@@ -98,6 +114,29 @@ def evaluate(suite: Path, data_dir: Path, ask, document: Path) -> dict:
         issues = []
         if case.get("intent") and (plan or {}).get("intent") != case["intent"]:
             issues.append("planner_intent")
+        coverage = result.get("coverage", {})
+        for need, fragments in case.get("need_contains", {}).items():
+            need_text = " ".join(c["text"] for c in claims if c.get("need") == need)
+            if any(
+                fragment.casefold() not in need_text.casefold() for fragment in fragments
+            ):
+                issues.append("coverage_content")
+                break
+        if any(
+            need not in coverage.get("covered", [])
+            for need in case.get("coverage_required", [])
+        ):
+            issues.append("coverage_required")
+        if any(
+            need not in coverage.get("missing", [])
+            for need in case.get("coverage_missing", [])
+        ):
+            issues.append("coverage_missing")
+        if (
+            case.get("routing_reason")
+            and result.get("routing", {}).get("reason") != case["routing_reason"]
+        ):
+            issues.append("routing_reason")
         if result["route"] not in case["routes"]:
             issues.append("route")
         if any(
@@ -211,6 +250,14 @@ def evaluate(suite: Path, data_dir: Path, ask, document: Path) -> dict:
             ),
             "planner_accepted_cases": sum(
                 bool(row["result"].get("query_plan")) for row in rows
+            ),
+            "coverage_model_matched_cases": sum(
+                row["result"].get("coverage", {}).get("status") == "model_matched"
+                for row in rows
+            ),
+            "hosted_candidates_blocked": sum(
+                bool(row["result"].get("routing", {}).get("hosted_candidate"))
+                for row in rows
             ),
             "planner_fallback_cases": sum(
                 any(

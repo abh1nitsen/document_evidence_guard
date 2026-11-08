@@ -1,8 +1,8 @@
 # Drishti Evidence Guard
 
-Version 0.3.1 provides a local HTML console, exact document definitions, bounded
-arithmetic, and a local SLM that selects evidence passages. Every report response
-has an explicit release contract and a trace of each workflow role.
+Version 0.4.0 adds local request interpretation, requirement-based retrieval and
+source sentence coverage checks to the HTML console. Exact definitions and bounded
+arithmetic retain their direct paths. Every response records its build and routing reason.
 
 ## Run the console
 
@@ -49,31 +49,11 @@ For a command-line question, omit the positional question to enter it interactiv
 uv run --locked evidence-guard --data-dir "EXTERNAL_PRIVATE_DIR" ask --pdf "EXTERNAL_REPORT.pdf"
 ```
 
-## Optional local semantic planner
+## Local interpretation and coverage
 
-The optional Gemma stage interprets conversational requests before retrieval.
-Exact definitions and arithmetic bypass this stage. Other requests send only the
-question, up to six short document headings and two preliminary excerpt previews
-(100 characters each) to the local planner. Its bounded
-JSON output contains an intent, a term, up to two retrieval queries and a reason
-code. The console displays this interpretation and each model's activity.
-
-The versioned `intent-search-v2-compact` prompt distinguishes definitions, explanations,
-comparisons, procedures, limitations, calculations and facts. It asks for
-complementary subject and relationship queries, preserves qualifiers and warns
-against accepting a question's premise. Examples use fictional entities.
-The selector also receives the requested intent and instructions to seek the
-corresponding evidence, rather than merely shared words. These instructions are
-model guidance, not a proof of relevance or completeness.
-
-For relationship-based intents, retrieval includes nearby prose around the two
-strongest hits, across at most one page boundary and without crossing a new
-numbered section. The same six-passage and 6,000-character budgets apply. This
-helps preserve table explanations and continued paragraphs. Source-only release
-contracts still apply even when explanatory evidence is retrieved.
-
-The existing Windows model used for validation is Gemma-2-2B-Instruct Q4_K_M,
-SHA-256 `e0aee85060f168f0f2d8473d7ea41ce2f3230c1bc1374847505ea599288a7787`.
+Enable `--planner-url` to use the new workflow with a separate Gemma planner.
+The tested Windows model is Gemma-2-2B-Instruct Q4_K_M, SHA-256
+`e0aee85060f168f0f2d8473d7ea41ce2f3230c1bc1374847505ea599288a7787`.
 Keep it outside Git and run a second loopback server:
 
 ```sh
@@ -81,42 +61,72 @@ llama-server -m "EXTERNAL_GEMMA.gguf" --host 127.0.0.1 --port 18090 -c 4096 -np 
 uv run --locked evidence-guard --data-dir "EXTERNAL_PRIVATE_DIR" ui --pdf "EXTERNAL_REPORT.pdf" --planner-url http://127.0.0.1:18090/v1
 ```
 
+The `request-plan-v3` planner receives the original request, the previous supported
+subject (when supplied), up to 14 chapter headings, six candidate headings and two
+100-character preliminary previews. It proposes a subject, standalone normalized
+request, evidence requirements, up to two searches, and optional clarification
+choices. These are hypotheses, not independently verified interpretations.
 Gemma-2/3 instructions are merged into a user turn for their chat template.
-The original query remains in reciprocal-rank fusion and its top retrieval
-candidate is retained. Invalid plans, timeouts, or dropped explicit numbers or
-negation fall back to the original query. This validation does not establish
-semantic equivalence of rewrites; general results still require source review.
-Canonical definition promotion additionally requires that the original request
-contains the term or glossary alias, has no unhandled material qualifiers, and
-matches a unique source definition. The planner cannot generate answer claims.
 
-Planner latency and tokens are logged separately from retrieval and selection.
-Successful plans are transient browser/CLI output; persistent telemetry stores
-only reason codes and counts. Evaluation reports may contain the plans and
-remain outside Git. With page labels, evaluation compares original and fused
-top-six reference-page ranks. A small development comparison measures behavior,
-not general semantic accuracy or production savings.
+The harness validates the schema, retains the original question, and repairs
+explicit number or negation loss by restoring the original to the search plan.
+This mechanical guard cannot establish semantic equivalence or detect every lost
+qualifier. Several requirements can accompany one request. A definition request
+with additional requirements cannot use the canonical definition promotion path.
+Two proposed interpretations produce a focused choice before evidence assessment.
 
-The initial v0.3.0 eight-case private development run passed seven automated checks.
-All three conversational definitions were released from exact source definitions;
-one limitations retrieval missed its labeled page. Across six page-labeled plans,
-reference-page rank improved in two cases, stayed the same in three and remained
-outside the top six in one. Three selector calls timed out and used labeled
-retrieval fallbacks. Mixed-workload median was 9.40 seconds and p95 19.38 seconds.
-These figures describe this Windows run and its small development suite only.
-They do not establish production readiness or a reduction in hosted spend.
+Retrieval fuses the original and normalized questions, complementary queries and
+queries for missing evidence requirements. English Snowball stemming connects
+inflections such as score/scoring. Nearby section prose can be included across one
+page boundary. Up to two batches contain at most four unseen passages and 6,000
+source characters each. The assessor sees the first 700 characters per passage,
+split into source spans of at most 320 characters and labeled with integer IDs.
+It selects one or two IDs per supported requirement; the harness copies the text.
+It cannot supply generated answer claims or invent a quotation. A shared sentence
+cannot silently complete distinct requirements: the harness retains one use and
+requires separate support for the others. This is conservative and can withhold
+valid multi-purpose sentences; it does not prove semantic independence.
 
-During v0.3.1 development, an eleven-case run with the compact prompt and a
-12-second planner allowance passed seven checks. Its failures included fact
-retrieval, limitations and planner timeouts. With the final 16-second planner
-allowance, a three-case targeted run passed the definition and explanation checks
-(two of three overall). The comparison plan dropped explicit numbers and was
-rejected; original-query fallback still retrieved the score evidence. The Mumbai
-explanation included the next-page aggregation paragraph through context expansion,
-but its selector timed out and used the labeled source fallback. Targeted median
-latency was 12.85 seconds and p95 18.82 seconds. No source-provenance or extractive
-contract failures were observed in these runs. Broad semantic coverage remains
-unestablished; a prompt change alone does not solve retrieval or runtime limits.
+Code checks IDs and provenance. Semantic coverage is model-assessed and can be
+wrong. The console explicitly distinguishes the two. A relevant excerpt does not
+complete a request when some required parts remain uncovered: missing parts drive
+the second retrieval. Previously supported parts are retained. No unseen evidence,
+two batches, model failure, or the remaining time budget stops the loop.
+
+Planner calls use up to 16 seconds; assessment calls use up to 18 seconds within a
+default 55-second question budget (`--seconds` changes it). Socket timeouts are not
+a strict wall-clock deadline. Server speed and response buffering can add overhead.
+The UI prepares instruction prefixes using two short synthetic local calls before
+serving. These calls have an eight-output-token limit and separate warmup telemetry;
+no report content enters warmup. Startup can take up to two 20-second call timeouts.
+
+The router distinguishes ambiguity, retrieval gaps, failed interpretation, failed
+execution and provisional model matches. Even a complete model match retains a
+hosted-review candidate because the selector cannot independently approve its own
+semantic judgments. An execution failure does not mean the
+report lacks information. A potential Groq task is recorded only as a candidate;
+**confidential report processing has no hosted execution path**. Policy-blocked
+candidates are shown separately from actual hosted calls. Missing retrieved evidence
+is not a reason to invent facts with a larger model. The fictional demo remains the
+only live Groq path.
+
+The UI shows the normalized request, required/covered/missing parts, citations,
+clarification choices, operational reasons and build information. The previous
+supported subject is carried in the current tab; this is not full conversational
+memory. A failed or ambiguous result clears it. Historical evaluations from a
+different source fingerprint are labeled accordingly. Prompt text, questions,
+normalized queries and source excerpts are not persisted in SQLite telemetry.
+Plans and results in explicit evaluation files remain outside Git.
+
+Development checks found incorrect semantic matches despite valid source IDs,
+including a standards paragraph selected for an experimental implementation request.
+Automated routing/page/provenance pass rates therefore overestimate usefulness.
+The model-matched indicator is diagnostic, not an accuracy score or permission to
+release an interpreted answer. Broader held-out user testing remains necessary.
+
+Without `--planner-url`, the compatibility path uses passage selection with source
+provenance checks and a review label; it does not perform the new coverage loop.
+This option is useful for comparison, not equivalent functionality.
 
 ## Release contracts
 
@@ -127,11 +137,11 @@ unestablished; a prompt change alone does not solve retrieval or runtime limits.
 | Source evidence | Displayed text is copied from identified source passages. Relevance, completeness and any interpretation require review. |
 | Clarification needed | The subject, term or arithmetic input needs clarification. |
 | Insufficient evidence | The reviewed passages did not establish an answer. |
-| Local run failed | No useful outcome could be produced within the runtime contract. Model failures with retrieved passages can return source evidence through a labeled lexical fallback. |
+| Local run failed | No useful outcome could be produced within the runtime contract. Failures retain retrieved material for inspection and identify the failed stage. |
 
 The source index keeps stable passage IDs, numbered headings, paragraphs, table
-headers and rows, and figure captions. Retrieval uses glossary aliases, plural
-normalization, BM25-style ranking and heading boosts. Short table captions are
+headers and rows, and figure captions. Retrieval uses glossary aliases, English
+Snowball stemming, BM25-style ranking and heading boosts. Short table captions are
 joined with their adjacent column blocks. Large blocks are bounded passages.
 Figures are represented by extracted text and captions. The PDF source link
 allows the user to inspect visual content.
@@ -141,24 +151,13 @@ and multiple words. A close unmatched heading prompts clarification.
 Generic document-scope wording such as "in this context" is separated from the
 definition term. Domain restrictions and additional questions remain part of the
 request and cannot be answered by promoting a general definition.
-Follow-ups can use the last definition's subject in the current tab. An unresolved pronoun
-requests clarification. Multi-turn reasoning over earlier answer details remains
-outside the conversation contract.
+Follow-ups can use the previous supported subject in the current tab.
+Reasoning over a complete conversation remains outside the contract.
 
-For other questions, the SLM selects IDs from schema-constrained candidates.
-The harness rejects unknown or duplicate IDs and copies the corresponding
-source text. It preserves the top lexical candidate as a retrieval anchor.
-The model cannot publish a generated paraphrase or approve its own answer.
-The UI labels these results as evidence requiring review.
-
-The loop tries at most two batches of up to six passages with a 6,000-character
-source budget. The SLM sees short, explicitly truncated previews and integer
-selection IDs. Returned evidence retains the complete selected source passage.
-Only unseen passages justify another retrieval. Model errors stop selection
-and can fall back to retrieved evidence. Planner requests use up to 16 seconds;
-selector requests use up to 12 seconds, each limited by the remaining budget
-inside the overall question budget, which defaults to 35 seconds. Runtime
-performance depends on hardware and model configuration.
+General responses remain source evidence requiring review, even if every requested
+part has model-assessed support. Partial coverage and model failures display their
+specific limitations and any retrieved material; the application does not claim
+that unassessed or missing evidence proves absence from the report.
 
 ## Evaluate locally
 
@@ -180,6 +179,11 @@ Store a labeled JSON array outside Git, with entries shaped like this example:
 
 The optional `topic` field supplies an established subject for a follow-up.
 A string `intent` label checks the semantic planner's classification when required.
+Optional `coverage_required` and `coverage_missing` arrays check requirement labels;
+`routing_reason` checks the final reason code. `need_contains` maps a requirement
+to required content fragments, so a quoted formula cannot pass a steps label merely
+by pointing at an allowed page. Coverage labels still need human
+review for relevance; model-assessed support does not establish correctness.
 A numeric `calculation` field specifies an expected arithmetic result.
 Run the suite through the same entry point used by the console:
 

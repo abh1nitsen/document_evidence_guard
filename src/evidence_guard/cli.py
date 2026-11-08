@@ -3,6 +3,7 @@
 import argparse
 import json
 import math
+from importlib.metadata import version
 from pathlib import Path
 from time import perf_counter
 
@@ -11,6 +12,7 @@ from .evaluation import evaluate
 from .evidence import load_pdf
 from .models import LocalModel
 from .telemetry import Trace, summarize
+from .warmup import prepare
 from .web import serve
 from .workflow import local_answer
 
@@ -39,7 +41,7 @@ def main() -> None:
         command.add_argument("--pdf", type=Path, required=True)
         command.add_argument("--local-url", default="http://127.0.0.1:8080/v1")
         command.add_argument("--local-model", default="qwen2.5-1.5b")
-        command.add_argument("--seconds", type=float, default=35)
+        command.add_argument("--seconds", type=float, default=55)
         command.add_argument("--planner-url", help="Loopback semantic query planner")
         command.add_argument("--planner-model", default="gemma-2-2b-it")
     ui.add_argument("--port", type=int, default=8787)
@@ -76,7 +78,7 @@ def main() -> None:
                     raise ValueError("Question must have 1 to 1500 characters.")
                 trace = Trace(
                     data_dir,
-                    "evaluation_v020"
+                    "evaluation_v3"
                     if args.command == "evaluate"
                     else "confidential_local_v2",
                     on_event=on_event,
@@ -88,6 +90,7 @@ def main() -> None:
                     model_identity="server_alias_only",
                     budget_seconds=args.seconds,
                     planner_model=planner.model if planner else None,
+                    package_version=version("drishti-evidence-guard"),
                 )
                 start = perf_counter()
                 trace.activity(
@@ -122,10 +125,19 @@ def main() -> None:
                 )
                 if trace.query_plan:
                     answer["query_plan"] = trace.query_plan
+                answer["build"] = {
+                    "version": version("drishti-evidence-guard"),
+                    "contract": answer.get("contract", "coverage-v3"),
+                }
                 trace.log("finish", route=answer["route"])
                 return dict(answer, trace_id=trace.id, events=trace.events)
 
             if args.command == "ui":
+                print(
+                    "Preparing local model instructions with synthetic inputs…",
+                    flush=True,
+                )
+                prepare(planner, model, data_dir)
                 serve(args.port, ask_pdf, data_dir, args.enable_live_demo, document=pdf)
                 return
             if args.command == "evaluate":

@@ -10,6 +10,7 @@ from pathlib import Path
 from threading import Lock
 
 from .demo import CASES, run_demo
+from .evaluation import source_fingerprint
 from .workflow import CONTRACT_VERSION
 
 ASSETS = {
@@ -103,15 +104,22 @@ def serve(
                 self.send(200, document.read_bytes(), "application/pdf")
             elif self.path == "/api/config":
                 summary = None
+                evaluation_info = None
                 reports = sorted(
                     (data_dir / "evaluations").glob("*.json"),
                     key=lambda path: path.stat().st_mtime,
                 )
                 if reports:
                     try:
-                        summary = json.loads(reports[-1].read_text(encoding="utf-8"))[
-                            "summary"
-                        ]
+                        report = json.loads(reports[-1].read_text(encoding="utf-8"))
+                        summary = report["summary"]
+                        manifest = report.get("manifest", {})
+                        evaluation_info = {
+                            "version": manifest.get("package", "unrecorded"),
+                            "current_source": manifest.get("source_tree_sha256")
+                            == source_fingerprint(),
+                            "created_utc": report.get("created_utc"),
+                        }
                     except (OSError, ValueError, KeyError):
                         pass
                 self.reply(
@@ -121,6 +129,7 @@ def serve(
                         "version": version("drishti-evidence-guard"),
                         "contract": CONTRACT_VERSION,
                         "evaluation": summary,
+                        "evaluation_info": evaluation_info,
                     },
                 )
             else:

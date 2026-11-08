@@ -39,6 +39,7 @@ def chat(
     timeout: float,
     key: str | None = None,
     schema: dict | None = None,
+    max_output_tokens: int | None = None,
 ) -> ChatResult:
     body = {
         "model": model,
@@ -46,14 +47,19 @@ def chat(
         "temperature": 0,
         "response_format": {"type": "json_object"},
     }
-    body["max_completion_tokens" if key else "max_tokens"] = 768 if key else 256
+    local_limit = {"coverage_v3": 256, "request_plan_v3": 384}.get(
+        (schema or {}).get("title"), 256
+    )
+    body["max_completion_tokens" if key else "max_tokens"] = (
+        768 if key else (max_output_tokens or local_limit)
+    )
     if schema is not None:
         body["response_format"]["schema"] = schema
     if key:
         body["reasoning_effort"] = "low"
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "drishti-evidence-guard/0.3.1",
+        "User-Agent": "drishti-evidence-guard/0.4.0",
     }
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -111,6 +117,7 @@ class LocalModel:
         payload: dict,
         timeout: float,
         schema: dict | None = None,
+        max_output_tokens: int | None = None,
     ) -> dict:
         messages = [
             {"role": "system", "content": instruction},
@@ -126,7 +133,10 @@ class LocalModel:
                 }
             ]
         self.last_usage = None
-        result = chat(self.endpoint, self.model, messages, timeout, schema=schema)
+        kwargs = {"schema": schema}
+        if max_output_tokens is not None:
+            kwargs["max_output_tokens"] = max_output_tokens
+        result = chat(self.endpoint, self.model, messages, timeout, **kwargs)
         usage = result.usage if isinstance(result.usage, dict) else {}
         self.last_usage = {
             "prompt_tokens": usage.get("prompt_tokens"),

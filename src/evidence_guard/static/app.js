@@ -65,6 +65,10 @@ function describe(event) {
     case "fetch": return `Fetch ${event.attempt} · ${plain(event.strategy || "synthetic")}${event.adjacent_context ? " · surrounding prose included" : ""}${pages}${duration}`;
     case "local_model": return `Local model · ${event.model || "selector"} · ${plain(event.stage)}${duration}`;
     case "query_understanding": return `Query planner · ${plain(event.status)} · ${plain(event.reason)} · original question retained`;
+    case "rewrite_guard": return `Rewrite repaired · ${event.reasons.map(plain).join(", ")}`;
+    case "coverage_guard": return `Coverage held back · ${plain(event.reason)} · ${event.needs.map(plain).join(", ")}`;
+    case "coverage": return `Coverage · ${event.covered_needs.map(plain).join(", ") || "none"} supported · missing ${event.missing_needs.map(plain).join(", ") || "none"}`;
+    case "escalation_decision": return `Routing · ${plain(event.reason)} · ${plain(event.action)}`;
     case "definition_promotion": return `Definition release · ${plain(event.reason)}${pages}`;
     case "local_issue": return `Local issue · ${plain(event.code)}`;
     case "first_verified": return `First evidence verified${pages}`;
@@ -145,15 +149,42 @@ function showRun(run) {
   };
   if (run.verification) panel.append(element("p", verification[run.verification] || plain(run.verification), "proof"));
   if (run.message) panel.append(element("p", run.message, "summary"));
+  panel.append(element("p", `Run build · ${run.build?.version || "not recorded"}`, "summary"));
   if (run.selection_method) panel.append(element("p", `Selection · ${plain(run.selection_method)}`, "summary"));
   if (run.query_plan) {
     const plan = run.query_plan;
     panel.append(element("h3", "Search interpretation"));
     panel.append(element("p", `${plan.model} · ${plain(plan.intent)} · ${plain(plan.reason)}`, "summary"));
     if (plan.term) panel.append(element("p", `Interpreted term · ${plan.term}`, "summary"));
+    if (plan.subject) panel.append(element("p", `Subject · ${plan.subject}`, "summary"));
+    if (plan.normalized_query) panel.append(element("p", `Interpreted request · ${plan.normalized_query}`, "summary"));
     const queries = element("ul");
     for (const query of plan.queries) queries.append(element("li", query));
     panel.append(queries, element("p", "The original question is retained in retrieval.", "summary"));
+  }
+  if (run.suggestions?.length) {
+    for (const suggestion of run.suggestions) {
+      const choice = element("button", suggestion, "secondary");
+      choice.type = "button";
+      choice.addEventListener("click", () => {
+        byId("question").value = suggestion;
+        request("/api/search", {question: suggestion, topic: null}, "Checking the selected interpretation…");
+      });
+      panel.append(choice);
+    }
+  }
+  if (run.coverage) {
+    const coverage = run.coverage;
+    panel.append(element("h3", "Evidence coverage"));
+    panel.append(element("p", `Model-assessed · ${plain(coverage.status)}. Exact quotations are checked against the source.`, "summary"));
+    const list = element("ul");
+    for (const need of coverage.required) {
+      list.append(element("li", `${plain(need)} · ${coverage.covered.includes(need) ? "source quotation found" : "not established"}`));
+    }
+    panel.append(list);
+  }
+  if (run.routing) {
+    panel.append(element("p", `Routing · ${plain(run.routing.reason)}. ${run.routing.hosted_candidate ? "A hosted reasoning task may help; report policy blocks transmission to Groq." : "Continue locally or review the stated limitation."}`, "summary"));
   }
   if (run.calculation) {
     panel.append(element("h3", "Calculation"));
@@ -162,6 +193,7 @@ function showRun(run) {
   if (run.claims?.length) {
     panel.append(element("h3", "Evidence"));
     for (const claim of run.claims) {
+      if (claim.need) panel.append(element("h3", plain(claim.need)));
       panel.append(element("p", claim.text, "answer"));
       const source = element("details");
       source.append(element("summary", `PDF page ${claim.page}`), element("blockquote", claim.quote));
@@ -263,7 +295,7 @@ async function request(path, payload, message) {
           pending.events.push(item.event);
         } else if (item.type === "result") {
           Object.assign(pending, item.result, {running: false});
-          if (item.result.topic) conversationTopic = item.result.topic;
+          conversationTopic = item.result.topic || null;
           finished = true;
         }
         showRun(pending);
@@ -315,11 +347,15 @@ byId("demo").addEventListener("click", () => {
 byId("live").addEventListener("click", () => {
   request("/api/demo", {live: true}, "Running the live synthetic demo with Groq…");
 });
-fetch("/api/config").then((response) => response.json()).then((config) => {
+async function refreshConfig() {
+  const config = await fetch("/api/config").then((response) => response.json());
   byId("live").hidden = !config.live_enabled;
   byId("build-info").textContent = `v${config.version} · ${config.contract}`;
   if (config.evaluation) {
-    byId("evaluation-summary").textContent = `Latest local evaluation: ${config.evaluation.passed}/${config.evaluation.total} automated checks passed. Median ${milliseconds(config.evaluation.median_ms)} · p95 ${milliseconds(config.evaluation.p95_ms)}. Cases with selector failures: ${config.evaluation.model_failure_cases ?? "unrecorded"}; planner fallbacks: ${config.evaluation.planner_fallback_cases ?? "unrecorded"}. Relevance requires separate review.`;
+    const scope = config.evaluation_info?.current_source ? "Current source evaluation" : `Historical evaluation (v${config.evaluation_info?.version || "unrecorded"}; different source)`;
+    byId("evaluation-summary").textContent = `${scope}: ${config.evaluation.passed}/${config.evaluation.total} automated checks passed. Median ${milliseconds(config.evaluation.median_ms)} · p95 ${milliseconds(config.evaluation.p95_ms)}. Cases with model failures: ${config.evaluation.model_failure_cases ?? "unrecorded"}; planner fallbacks: ${config.evaluation.planner_fallback_cases ?? "unrecorded"}. Relevance requires separate review.`;
     byId("evaluation-summary").hidden = false;
   }
-}).catch(() => {});
+  }
+refreshConfig().catch(() => {});
+window.addEventListener("focus", () => refreshConfig().catch(() => {}));

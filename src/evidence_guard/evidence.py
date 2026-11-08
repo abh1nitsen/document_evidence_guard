@@ -7,10 +7,20 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from difflib import get_close_matches
+from functools import lru_cache
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import pypdf
+import snowballstemmer
+
+STEMMER = snowballstemmer.stemmer("english")
+
+
+@lru_cache(maxsize=16384)
+def stem(word: str) -> str:
+    return STEMMER.stemWord(word)
+
 
 STOP = set(
     (
@@ -22,12 +32,7 @@ STOP = set(
 
 def terms(value: str) -> set[str]:
     words = set(re.findall(r"\w+(?:\.\d+)*", value.casefold())) - STOP
-    return {
-        word[:-1]
-        if len(word) > 4 and word.endswith("s") and not word.endswith(("ss", "is", "us"))
-        else word
-        for word in words
-    }
+    return {stem(word) for word in words}
 
 
 def definition_target(question: str) -> str | None:
@@ -164,6 +169,17 @@ class Index:
         self.words = {page.number: terms(page.text) for page in pages}
         self.frequency = Counter(word for words in self.words.values() for word in words)
         self.passages = passages_from_pages(pages)
+
+    def outline(self) -> list[dict]:
+        """Small document-wide map, separate from potentially misleading top hits."""
+        entries = []
+        for page in self.pages:
+            for line in page.text.splitlines():
+                title = line.strip()
+                if re.match(r"^(?:Chapter \d+|Appendix [A-Z])\b", title):
+                    if title not in {e["title"] for e in entries}:
+                        entries.append({"page": page.number, "title": title[:90]})
+        return entries[:14]
 
     def expansion(self, target: str) -> str | None:
         for page in self.pages:

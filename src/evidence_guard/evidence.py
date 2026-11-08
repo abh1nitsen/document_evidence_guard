@@ -42,7 +42,9 @@ def definition_target(question: str) -> str | None:
         match = re.search(pattern, question, re.IGNORECASE)
         if match:
             target = re.sub(
-                r"\s+(?:please|in simple words|in this report|to me)\s*$",
+                r"(?:\s+(?:please|in simple words|to me|here|"
+                r"in (?:this|the) (?:context|report|document|chapter)|"
+                r"within (?:this|the) (?:context|report|document|chapter)))+\s*$",
                 "",
                 match[1].strip(),
                 flags=re.IGNORECASE,

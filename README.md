@@ -1,6 +1,6 @@
 # Drishti Evidence Guard
 
-Version 0.2.0 provides a local HTML console, exact document definitions, bounded
+Version 0.2.1 provides a local HTML console, exact document definitions, bounded
 arithmetic, and a local SLM that selects evidence passages. Every report response
 has an explicit release contract and a trace of each workflow role.
 
@@ -67,8 +67,11 @@ Figures are represented by extracted text and captions. The PDF source link
 allows the user to inspect visual content.
 
 Definitions support articles, conversational wording, ordinary terms, acronyms,
-and multiple words. A close unmatched heading prompts clarification. Follow-ups
-can use the last definition's subject in the current tab. An unresolved pronoun
+and multiple words. A close unmatched heading prompts clarification.
+Generic document-scope wording such as "in this context" is separated from the
+definition term. Domain restrictions and additional questions remain part of the
+request and cannot be answered by promoting a general definition.
+Follow-ups can use the last definition's subject in the current tab. An unresolved pronoun
 requests clarification. Multi-turn reasoning over earlier answer details remains
 outside the conversation contract.
 

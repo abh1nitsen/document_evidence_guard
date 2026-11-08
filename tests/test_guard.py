@@ -238,6 +238,47 @@ def test_ordinary_definition_paraphrases_preserve_qualifiers(tmp_path, question)
     assert claim["quote"] in " ".join(index.pages[0].text.split())
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is an incident in this context?",
+        "What is incident in the report?",
+        "Explain the incident within this document.",
+        "What does incident mean in this context?",
+        "What is incident here, please?",
+        "Define incident in this context in simple words please.",
+    ],
+)
+def test_generic_scope_does_not_become_part_of_the_term(question):
+    index = Index(
+        [
+            Page(
+                2,
+                "1.2 Incident\n"
+                "Incident refers to a recorded event. Its classification needs review.",
+            )
+        ],
+        "test",
+    )
+    claim = index.definition(question)
+    assert definition_target(question) == "incident"
+    assert claim["page"] == 2
+    assert "classification needs review" in claim["text"]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is incident in aviation?",
+        "What is incident and who reports it?",
+        "What is incident in this context and is it severe?",
+    ],
+)
+def test_material_conditions_cannot_promote_a_general_definition(question):
+    index = Index([Page(2, "1.2 Incident\nIncident is a recorded event.")], "test")
+    assert index.definition(question) is None
+
+
 def test_self_approval_cannot_release_invented_answer(tmp_path):
     class UnreliableModel:
         model = "fake"

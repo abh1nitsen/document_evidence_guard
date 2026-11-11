@@ -9,7 +9,7 @@ server, private input or real credential should be necessary.
 ```sh
 uv run --locked ruff check src tests scripts
 uv run --locked ruff format --check src tests
-uv run --locked pytest
+uv run --locked python -m pytest
 node --check src/evidence_guard/static/app.js
 uv run --locked python scripts/check_public_tree.py
 uv build

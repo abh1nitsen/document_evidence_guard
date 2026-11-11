@@ -28,9 +28,21 @@ h2 { margin: 0; font-size: 1.2rem; letter-spacing: -.025em; }
 h3 { margin: 20px 0 8px; font-size: .92rem; }
 .panel, .metric { border: 1px solid var(--border); border-radius: 15px; background: #fff; }
 .search { padding: 21px; box-shadow: 0 8px 22px #123f3710; }
+.documents { padding: 21px; margin-bottom: 18px; }
+.documents h2 { margin-bottom: 15px; }
+.documents form { margin-bottom: 16px; }
+.documents button { padding: 10px 16px; }
+.documents select { width: 100%; font: inherit; padding: 10px; border: 1px solid #c8d8d0; border-radius: 9px; background: white; }
+#document-status { color: var(--muted); font-size: .9rem; }
 label { display: block; font-weight: 650; margin-bottom: 8px; }
+.confidential-option { display: flex; align-items: center; gap: 9px; }
+.confidential-option input { flex: none; width: 18px; height: 18px; margin: 0; padding: 0; }
+#confidential-controls { margin-bottom: 14px; }
+#confidential-controls .activity-note { margin: 6px 0; }
 .search-line { display: flex; gap: 10px; }
 input, button { font: inherit; }
+textarea { width: 100%; font: inherit; border: 1px solid #c8d8d0; border-radius: 9px; padding: 10px 13px; resize: vertical; }
+.search-line + label { margin-top: 14px; font-size: .85rem; color: var(--muted); }
 input { min-width: 0; flex: 1; background: #f8faf9; border: 1px solid #c8d8d0; border-radius: 9px; padding: 11px 13px; color: inherit; }
 button { cursor: pointer; border-radius: 8px; font-weight: 650; }
 button:disabled { opacity: .55; cursor: wait; }
@@ -87,3 +99,5 @@ blockquote { margin: 7px 0 1px; color: var(--muted); }
   .agents { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .search { padding: 15px; }
 }
+/* Preserve source line breaks; no model-authored answer text in excerpt mode. */
+.source-text { white-space: pre-wrap; font-style: normal; }

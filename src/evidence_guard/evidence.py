@@ -163,6 +163,8 @@ def passages_from_pages(pages: list[Page]) -> list[Passage]:
 
 
 class Index:
+    search_terms = staticmethod(terms)
+
     def __init__(self, pages: list[Page], fingerprint: str):
         self.pages = pages
         self.fingerprint = fingerprint
@@ -251,12 +253,12 @@ class Index:
 
     def search(self, query: str, limit: int = 8) -> list[Passage]:
         """BM25-style paragraph retrieval with glossary aliases and heading boosts."""
-        query_terms = terms(query)
+        query_terms = self.search_terms(query)
         for token in list(query_terms):
             expansion = self.expansion(token)
             if expansion:
-                query_terms |= terms(expansion)
-        tokenized = [terms(p.text) for p in self.passages]
+                query_terms |= self.search_terms(expansion)
+        tokenized = [self.search_terms(p.text) for p in self.passages]
         frequency = Counter(word for words in tokenized for word in words)
         average = sum(len(words) for words in tokenized) / max(1, len(tokenized))
         target = definition_target(query)
@@ -271,7 +273,7 @@ class Index:
                 / (1 + 1.2 * (0.25 + 0.75 * len(words) / max(1, average)))
                 for word in matched
             )
-            score += 2 * len(terms(passage.heading) & query_terms)
+            score += 2 * len(self.search_terms(passage.heading) & query_terms)
             if passage.kind == "figure_caption" or passage.text.startswith("Source:"):
                 score *= 0.25
             if passage.heading in {"Abbreviations", "References"}:
@@ -451,7 +453,9 @@ def load_pdf(path: Path, data_dir: Path) -> tuple[Index, bool]:
         values = json.loads(cache.read_text(encoding="utf-8"))
     else:
         reader = pypdf.PdfReader(path)
-        values = [page.extract_text(extraction_mode="layout") for page in reader.pages]
+        values = [
+            page.extract_text(extraction_mode="layout") or "" for page in reader.pages
+        ]
         # Replace atomically so concurrent readers never see an incomplete index.
         with NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=data_dir, delete=False

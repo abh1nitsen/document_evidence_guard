@@ -5,11 +5,19 @@ const runs = [];
 let selected = null;
 let activeRun = null;
 let conversationTopic = null;
+let currentDocument = null;
+let documentLibrary = [];
+let requestInProgress = false;
+let verificationConfig = null;
+try { byId("local-only").checked = sessionStorage.getItem("evidence-guard-local-only") === "true"; } catch {}
+let maxUploadBytes = 25 * 1024 * 1024;
 const roleNames = {
   planner: "Planner", retriever: "Retriever", context: "Context",
   writer: "Writer", verifier: "Verifier", router: "Router",
 };
 const routeLabels = {
+  source_excerpt: ["Original source excerpts · beta", "local"],
+  beta_flag: ["Beta flag · review needed", "open"],
   answer_local: ["Answered locally", "local"],
   answer_frontier: ["Answered via Groq", "frontier"],
   would_call: ["Would call Groq", "frontier"],
@@ -18,8 +26,9 @@ const routeLabels = {
   provider_error: ["Groq failed", "open"],
   frontier_unverified: ["Groq answer withheld", "open"],
   local_error: ["Local run failed", "open"],
-  running: ["Running locally", "local"],
+  running: ["Running", "local"],
   evidence_only: ["Source evidence · review needed", "open"],
+  human_review: ["Draft · human review needed", "open"],
   ask_clarification: ["Clarification needed", "open"],
   calculation_local: ["Calculated locally", "local"],
 };
@@ -40,6 +49,34 @@ const plain = (value) => String(value ?? "").replaceAll("_", " ");
 const milliseconds = (value) => value >= 1000
   ? `${(value / 1000).toFixed(2)} s` : `${value.toFixed(1)} ms`;
 const eventOf = (run, kind) => run.events.find((event) => event.kind === kind);
+const sourceURL = (run, page) => `/api/document${run.document?.id ? `?document_id=${encodeURIComponent(run.document.id)}` : ""}#page=${page}`;
+
+function chooseDocument(id) {
+  const next = documentLibrary.find((doc) => doc.id === id) || null;
+  if (next?.id !== currentDocument?.id) {
+    conversationTopic = null;
+    byId("context").value = "";
+  }
+  currentDocument = next;
+  byId("document-select").value = next?.id || "";
+  byId("search-button").disabled = requestInProgress || !next;
+  byId("document-status").textContent = next
+    ? `${next.name} · ${next.searchable_pages}/${next.pages} searchable pages. ${next.warning || ""}`
+    : "Upload or choose a PDF before asking a question.";
+}
+
+function drawDocuments(selectedId) {
+  const select = byId("document-select");
+  const placeholder = element("option", "Choose or upload a PDF");
+  placeholder.value = "";
+  select.replaceChildren(placeholder);
+  for (const doc of documentLibrary) {
+    const option = element("option", doc.name);
+    option.value = doc.id;
+    select.append(option);
+  }
+  chooseDocument(selectedId);
+}
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -64,6 +101,10 @@ function describe(event) {
     case "index_load": return `Report index ${event.cache_hit ? "reused" : "built"}${duration}`;
     case "fetch": return `Fetch ${event.attempt} · ${plain(event.strategy || "synthetic")}${event.adjacent_context ? " · surrounding prose included" : ""}${pages}${duration}`;
     case "local_model": return `Local model · ${event.model || "selector"} · ${plain(event.stage)}${duration}`;
+    case "hosted_model": return `Hosted verifier · ${event.model}${duration}`;
+    case "work_tool": return `Document tool · ${plain(event.tool)} · ${event.status}${pages}${duration}`;
+    case "work_state": return `Workspace · ${event.requirements} requirements · ${event.read_passages} read passages · ${event.gaps} gaps`;
+    case "work_check": return `Answer checks · ${plain(event.basis)} · ${event.passed ? "passed within stated scope" : "recovery or review required"}`;
     case "query_understanding": return `Query planner · ${plain(event.status)} · ${plain(event.reason)} · original question retained`;
     case "rewrite_guard": return `Rewrite repaired · ${event.reasons.map(plain).join(", ")}`;
     case "coverage_guard": return `Coverage held back · ${plain(event.reason)} · ${event.needs.map(plain).join(", ")}`;
@@ -138,17 +179,85 @@ function showRun(run) {
   const panel = byId("result");
   panel.classList.remove("empty");
   panel.replaceChildren(element("p", run.question, "answer"));
+  if (run.model_roles) {
+    panel.append(element("p", `Answer · ${run.model_roles.answer.model} | Verifier · ${run.model_roles.verifier.model}`, "summary"));
+  }
+  if (run.verification_provider) {
+    panel.append(element("p", run.verification_provider === "local"
+      ? "Verification: local only · no Groq check"
+      : "Verification: Groq", "summary"));
+  }
+  if (run.verification_notice) panel.append(element("p", run.verification_notice, "proof"));
   setBadge(byId("route-badge"), run);
   const total = eventOf(run, "finish");
-  const lane = run.case ? "Synthetic demo" : "Confidential report";
+  const lane = run.case ? "Synthetic demo" : run.document?.name || "Confidential document";
   panel.append(element("p", `${lane} · ${total ? milliseconds(total.elapsed_ms) + " total" : "Run in progress"}`, "summary"));
   const verification = {
+    exact_source_text_model_assessed_relevance: "Exact source text checked · relevance and completeness assessed by the configured verifier",
+    exact_source_text_bounded_task_match: "Exact source text checked · bounded section-location or explicit-duration check passed",
     exact_source_definition: "Verification · explicit definition in source",
     exact_excerpt_only: "Verification · source provenance only; relevance and completeness require review",
     bounded_arithmetic: "Verification · arithmetic on user-provided values",
   };
   if (run.verification) panel.append(element("p", verification[run.verification] || plain(run.verification), "proof"));
   if (run.message) panel.append(element("p", run.message, "summary"));
+  if (run.review_excerpts?.length) {
+    const pending = element("details");
+    pending.append(element("summary", "Inspect selected source text · not approved as an answer"));
+    for (const excerpt of run.review_excerpts) {
+      pending.append(element("blockquote", excerpt.text, "source-text"));
+      const link = element("a", `PDF page ${excerpt.page} · ${excerpt.heading || "Source passage"}`);
+      link.href = sourceURL(run, excerpt.page);
+      link.target = "_blank";
+      link.rel = "noopener";
+      pending.append(link);
+    }
+    panel.append(pending);
+  }
+  if (run.draft_answer?.length) {
+    panel.append(element("h3", "Provisional answer · review required"));
+    for (const claim of run.draft_answer) {
+      panel.append(element("p", claim.text, "answer"));
+      for (const id of claim.citations) {
+        const passage = run.evidence?.find((p) => p.passage_id === id);
+        if (!passage) continue;
+        const link = element("a", `PDF page ${passage.page} · ${passage.heading}`);
+        link.href = sourceURL(run, passage.page);
+        link.target = "_blank";
+        link.rel = "noopener";
+        panel.append(link);
+      }
+    }
+  }
+  if (run.working_state) {
+    panel.append(element("h3", "Request requirements"));
+    const needs = element("ol");
+    for (const need of run.working_state.requirements) needs.append(element("li", need));
+    panel.append(needs);
+    for (const gap of run.working_state.gaps) panel.append(element("p", `Unresolved · ${gap}`, "summary"));
+  }
+  if (run.checks?.length) {
+    const details = element("details");
+    details.append(element("summary", "Checks and recovery history"));
+    for (const check of run.checks) {
+      details.append(element("p", `${plain(check.basis)} · ${JSON.stringify(check.checks || {})} · ${(check.issues || []).join("; ") || "no issues reported"}`, "summary"));
+    }
+    panel.append(details);
+  }
+  if (run.record) {
+    const download = element("button", "Download local review packet", "secondary");
+    download.type = "button";
+    download.addEventListener("click", () => {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(run, null, 2)], {type: "application/json"}));
+      const link = element("a");
+      link.href = url;
+      link.download = `review-${run.trace_id}.json`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+    panel.append(download);
+    panel.append(element("p", `Saved local record · SHA-256 ${run.record.sha256}`, "summary"));
+  }
   panel.append(element("p", `Run build · ${run.build?.version || "not recorded"}`, "summary"));
   if (run.selection_method) panel.append(element("p", `Selection · ${plain(run.selection_method)}`, "summary"));
   if (run.query_plan) {
@@ -191,18 +300,21 @@ function showRun(run) {
     panel.append(element("p", `${run.calculation.expression} = ${run.calculation.value}`, "answer"));
   }
   if (run.claims?.length) {
-    panel.append(element("h3", "Evidence"));
+    panel.append(element("h3", run.route === "source_excerpt" ? "Selected source text" : "Evidence"));
     for (const claim of run.claims) {
       if (claim.need) panel.append(element("h3", plain(claim.need)));
-      panel.append(element("p", claim.text, "answer"));
+      panel.append(element(run.route === "source_excerpt" ? "blockquote" : "p", claim.text, run.route === "source_excerpt" ? "source-text" : "answer"));
       const source = element("details");
       source.append(element("summary", `PDF page ${claim.page}`), element("blockquote", claim.quote));
       const openSource = element("a", "Open source page");
-      openSource.href = `/api/document#page=${claim.page}`;
+      openSource.href = sourceURL(run, claim.page);
       openSource.target = "_blank";
       openSource.rel = "noopener";
       source.append(openSource);
-      panel.append(source);
+      if (run.route === "source_excerpt") {
+        openSource.textContent = `PDF page ${claim.page} · ${claim.heading || "Source passage"}`;
+        panel.append(openSource);
+      } else panel.append(source);
     }
   } else if (!run.case && !run.running && !run.message) {
     panel.append(element("p", "The local run could not verify an answer.", "summary"));
@@ -233,9 +345,9 @@ function showRun(run) {
 function drawHistory() {
   byId("empty-history").hidden = runs.length > 0;
   byId("total").textContent = runs.length;
-  byId("local").textContent = runs.filter((run) => ["answer_local", "calculation_local"].includes(run.route)).length;
-  byId("frontier").textContent = runs.filter((run) => eventOf(run, "frontier_start")).length;
-  byId("open").textContent = runs.filter((run) => ["partial", "insufficient_evidence", "evidence_only", "ask_clarification", "local_error"].includes(run.route)).length;
+  byId("local").textContent = runs.filter((run) => ["source_excerpt", "answer_local", "calculation_local"].includes(run.route) && !run.review_packet?.hosted_calls).length;
+  byId("frontier").textContent = runs.filter((run) => eventOf(run, "frontier_start") || run.review_packet?.hosted_calls > 0).length;
+  byId("open").textContent = runs.filter((run) => ["beta_flag", "human_review", "partial", "insufficient_evidence", "evidence_only", "ask_clarification", "local_error"].includes(run.route)).length;
   const list = byId("runs");
   list.replaceChildren();
   for (const run of runs) {
@@ -246,7 +358,7 @@ function drawHistory() {
     button.append(element("span", run.question, "run-title"));
     const badge = element("span");
     setBadge(badge, run);
-    button.append(badge, element("span", run.case ? "Demo" : "Report", "run-meta"));
+    button.append(badge, element("span", run.case ? "Demo" : run.document?.name || "Document", "run-meta"));
     button.addEventListener("click", () => {
       showRun(run);
       list.children[runs.indexOf(run)]?.firstElementChild.focus();
@@ -257,7 +369,12 @@ function drawHistory() {
 }
 
 async function request(path, payload, message) {
-  const buttons = ["search-button", "demo", "live"].map(byId);
+  if (path === "/api/search") payload = {...payload, local_only: byId("local-only").checked};
+  if (path === "/api/search" && !byId("model-role-controls").hidden) {
+    payload = {...payload, role_assignment: byId("model-roles").value};
+  }
+  const buttons = ["search-button", "demo", "live", "upload-button", "document-select", "pdf-file", "model-roles", "local-only"].map(byId);
+  requestInProgress = true;
   const status = byId("status");
   status.hidden = false;
   status.classList.remove("error");
@@ -277,7 +394,8 @@ async function request(path, payload, message) {
     if (path === "/api/search") {
       pending = {
         question: payload.question, route: "running", events: [],
-        trace_id: "pending", running: true, startedAt: performance.now(),
+        trace_id: "pending", running: true, startedAt: performance.now(), document: currentDocument,
+        local_only: payload.local_only,
       };
       activeRun = pending;
       runs.unshift(pending);
@@ -327,7 +445,9 @@ async function request(path, payload, message) {
     status.classList.add("error");
   } finally {
     activeRun = null;
+    requestInProgress = false;
     buttons.forEach((button) => { button.disabled = false; });
+    byId("search-button").disabled = !currentDocument;
   }
 }
 
@@ -339,7 +459,40 @@ drawAgents(null);
 byId("search-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const question = byId("question").value.trim();
-  if (question) request("/api/search", {question, topic: conversationTopic}, "Searching and checking source evidence locally…");
+  const context = byId("context").value.trim() || null;
+  if (question && currentDocument) request("/api/search", {question, topic: conversationTopic, context, document_id: currentDocument.id}, "Searching and checking source evidence…");
+});
+byId("document-select").addEventListener("change", (event) => chooseDocument(event.target.value));
+byId("upload-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const file = byId("pdf-file").files[0];
+  if (!file || requestInProgress) return;
+  if (file.size > maxUploadBytes) {
+    byId("document-status").textContent = "PDF uploads must be 25 MB or smaller.";
+    return;
+  }
+  const controls = ["search-button", "upload-button", "document-select", "pdf-file", "demo", "live"].map(byId);
+  requestInProgress = true;
+  controls.forEach((control) => { control.disabled = true; });
+  byId("document-status").textContent = "Uploading and indexing the PDF locally…";
+  try {
+    const response = await fetch(`/api/documents?name=${encodeURIComponent(file.name)}`, {
+      method: "POST", headers: {"Content-Type": "application/pdf"}, body: file,
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "The PDF could not be uploaded.");
+    documentLibrary = documentLibrary.filter((doc) => doc.id !== data.document.id);
+    documentLibrary.push(data.document);
+    drawDocuments(data.document.id);
+    byId("document-status").textContent += ` ${data.duplicate ? "Existing PDF selected." : "Ready."} Indexing took ${milliseconds(data.index_ms)}.`;
+    byId("pdf-file").value = "";
+  } catch (error) {
+    byId("document-status").textContent = error.message;
+  } finally {
+    requestInProgress = false;
+    controls.forEach((control) => { control.disabled = false; });
+    byId("search-button").disabled = !currentDocument;
+  }
 });
 byId("demo").addEventListener("click", () => {
   request("/api/demo", {live: false}, "Running the offline synthetic demo…");
@@ -347,10 +500,54 @@ byId("demo").addEventListener("click", () => {
 byId("live").addEventListener("click", () => {
   request("/api/demo", {live: true}, "Running the live synthetic demo with Groq…");
 });
+function updateVerificationMode() {
+  const config = verificationConfig;
+  if (!config) return;
+  const localOnly = byId("local-only").checked;
+  const local = localOnly || !config.hosted_verification;
+  byId("privacy-note").textContent = local
+    ? "Local verification only. Your question, context and excerpts stay on this device. No Groq check."
+    : "Selected excerpts, your question and supplied context are sent to Groq for verification. PDFs remain stored locally.";
+  byId("local-verification-warning").textContent = config.local_verification_warning || "Local verification may be less reliable. Review the source excerpts.";
+  byId("local-verification-warning").hidden = !local || config.contract !== "source-selection-v1";
+  byId("live").hidden = !config.live_enabled || localOnly;
+  if (config.hosted_verification && config.local_verification) {
+    const roles = localOnly ? config.local_verification : config.model_roles.primary;
+    const option = byId("model-roles").querySelector('option[value="primary"]');
+    if (option) option.textContent = `Select: ${roles.answer} · Verify: ${roles.verifier}`;
+  }
+}
+byId("local-only").addEventListener("change", () => {
+  try { sessionStorage.setItem("evidence-guard-local-only", String(byId("local-only").checked)); } catch {}
+  updateVerificationMode();
+});
 async function refreshConfig() {
   const config = await fetch("/api/config").then((response) => response.json());
-  byId("live").hidden = !config.live_enabled;
+  verificationConfig = config;
+  byId("confidential-controls").hidden = !config.hosted_verification || !config.local_verification;
   byId("build-info").textContent = `v${config.version} · ${config.contract}`;
+  if (config.contract === "source-selection-v1") {
+    roleNames.planner = "Query preparation";
+    roleNames.writer = "Source selector";
+  }
+  if (config.model_roles && !byId("model-roles").options.length) {
+    for (const key of ["primary", "reversed"]) {
+      const roles = config.model_roles[key];
+      if (!roles) continue;
+      const option = element("option", `Select: ${roles.answer} · Verify: ${roles.verifier}`);
+      option.value = key;
+      byId("model-roles").append(option);
+    }
+    byId("model-roles").value = config.model_roles.default;
+    byId("model-role-controls").hidden = false;
+  }
+  updateVerificationMode();
+  maxUploadBytes = config.max_upload_bytes || maxUploadBytes;
+  if (!requestInProgress && Array.isArray(config.documents)) {
+    documentLibrary = config.documents;
+    const selectedId = currentDocument?.id || config.default_document_id || documentLibrary[0]?.id;
+    drawDocuments(selectedId);
+  }
   if (config.evaluation) {
     const scope = config.evaluation_info?.current_source ? "Current source evaluation" : `Historical evaluation (v${config.evaluation_info?.version || "unrecorded"}; different source)`;
     byId("evaluation-summary").textContent = `${scope}: ${config.evaluation.passed}/${config.evaluation.total} automated checks passed. Median ${milliseconds(config.evaluation.median_ms)} · p95 ${milliseconds(config.evaluation.p95_ms)}. Cases with model failures: ${config.evaluation.model_failure_cases ?? "unrecorded"}; planner fallbacks: ${config.evaluation.planner_fallback_cases ?? "unrecorded"}. Relevance requires separate review.`;

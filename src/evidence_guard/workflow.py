@@ -221,9 +221,34 @@ def local_answer(
     budget: float,
     topic: str | None = None,
     planner: LocalModel | None = None,
+    workflow: str = "legacy",
+    semantic=None,
+    context: str | None = None,
+    loop_profile: str = "fast",
+    verifier: LocalModel | None = None,
+    document_path=None,
 ) -> dict:
+    if workflow not in {"working", "legacy", "extractive"}:
+        raise ValueError("Unknown workflow.")
     deadline = perf_counter() + budget
-    trace.log("contract", version=CONTRACT_VERSION)
+    if workflow == "extractive":
+        from .extractive import run
+
+        return run(
+            question.strip(),
+            index,
+            model,
+            trace,
+            deadline,
+            verifier,
+            context=context,
+            topic=topic,
+            document_path=document_path,
+        )
+    trace.log(
+        "contract",
+        version="document-work-v1" if workflow == "working" else CONTRACT_VERSION,
+    )
     trace.activity(
         "planner",
         "running",
@@ -232,7 +257,7 @@ def local_answer(
     )
     original_question = question.strip()
     question, unclear = resolve_question(original_question, topic)
-    if unclear and planner is None:
+    if unclear and planner is None and workflow == "legacy":
         trace.log("route", decision="skip", reason="missing_conversation_subject")
         trace.activity(
             "router",
@@ -344,6 +369,23 @@ def local_answer(
                 "message": "Did you mean " + " or ".join(suggestions) + "?",
                 "suggestions": suggestions,
             }
+    if workflow == "working":
+        from .working import run
+
+        return run(
+            original_question,
+            index,
+            model,
+            trace,
+            deadline,
+            topic,
+            semantic,
+            explicit_context=context,
+            profile=loop_profile,
+            verifier=verifier,
+        )
+    if workflow != "legacy":
+        raise ValueError("Unknown workflow.")
     plan = None
     if planner is not None:
         if deadline - perf_counter() > 1:
@@ -450,6 +492,7 @@ def local_answer(
         )
         payload = {
             "question": question,
+            "explicit_context": context,
             "requested_intent": plan["intent"] if plan else "unspecified",
             "passages": [
                 {

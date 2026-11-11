@@ -12,3 +12,16 @@ dist/
 *.jsonl
 data/
 runs/
+work/
+outputs/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+*.zip
+*.tar.gz
+*.whl
+*.pem
+*.key
+*.p12
+*.sqlite-*

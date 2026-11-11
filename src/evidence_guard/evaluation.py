@@ -19,7 +19,9 @@ from .workflow import CONTRACT_VERSION
 def source_fingerprint() -> str:
     source = Path(__file__).parent
     digest = hashlib.sha256()
-    for path in sorted(source.rglob("*.py")):
+    for path in sorted(source.rglob("*")):
+        if not path.is_file() or path.suffix not in {".py", ".js", ".css", ".html"}:
+            continue
         digest.update(str(path.relative_to(source)).encode())
         digest.update(path.read_bytes())
     return digest.hexdigest()

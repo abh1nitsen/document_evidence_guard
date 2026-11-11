@@ -17,22 +17,51 @@
   <main class="shell">
     <div class="intro">
       <p class="eyebrow">DOCUMENT CONSOLE</p>
-      <h1>Search the report.</h1>
-      <p>Ask a question, check the source, and follow the route it took.</p>
+      <h1>Ask your documents.</h1>
+      <p>Ask a question and read the original document text selected for you.</p>
       <p id="build-info" class="build-info"></p>
       <p id="evaluation-summary" class="build-info" hidden></p>
     </div>
+    <section class="panel documents" aria-labelledby="documents-title">
+      <h2 id="documents-title">Local PDF library</h2>
+      <form id="upload-form">
+        <label for="pdf-file">Upload a PDF</label>
+        <div class="search-line">
+          <input id="pdf-file" type="file" accept="application/pdf,.pdf" required>
+          <button id="upload-button" class="secondary" type="submit">Upload PDF</button>
+        </div>
+      </form>
+      <label for="document-select">Document to search</label>
+      <select id="document-select"><option value="">Choose or upload a PDF</option></select>
+      <p id="document-status" role="status" aria-live="polite">Loading local library…</p>
+      <p class="activity-note">PDFs stay on this device. Up to 25 MB and 500 pages. Scanned pages need OCR before upload.</p>
+    </section>
     <section class="panel search" aria-labelledby="search-label">
       <form id="search-form">
-        <label id="search-label" for="question">Ask the report</label>
+        <div id="confidential-controls" hidden>
+          <label class="confidential-option" for="local-only">
+            <input id="local-only" type="checkbox" aria-describedby="local-verification-warning">
+            Confidential document — use local verification only
+          </label>
+          <p class="activity-note">When checked, your question, context and excerpts stay on this device. Groq is not used for this search.</p>
+        </div>
+        <p id="local-verification-warning" class="proof" role="note" hidden></p>
+        <div id="model-role-controls" hidden>
+          <label for="model-roles">Selection and verification models</label>
+          <select id="model-roles"></select>
+        </div>
+        <label id="search-label" for="question">Ask the selected document</label>
         <div class="search-line">
           <input id="question" name="question" type="search" maxlength="1500"
             placeholder="What would you like to find?" autocomplete="off" required>
-          <button class="primary" id="search-button" type="submit">Search <span aria-hidden="true">↗</span></button>
+          <button class="primary" id="search-button" type="submit" disabled>Search <span aria-hidden="true">↗</span></button>
         </div>
+        <label for="context">Optional context or selected document text</label>
+        <textarea id="context" maxlength="3000" rows="2"
+          placeholder="Paste the result or context your question refers to."></textarea>
       </form>
       <div class="search-footer">
-        <span>Report questions and evidence stay on this device.</span>
+        <span id="privacy-note">Questions and evidence stay on this device.</span>
         <div class="demo-actions">
           <button id="demo" class="secondary" type="button">Try synthetic demo</button>
           <button id="live" class="secondary" type="button" hidden>Run live Groq demo</button>
@@ -45,7 +74,7 @@
         <div><p class="eyebrow">LIVE WORKFLOW</p><h2 id="activity-title">Agent activity</h2></div>
         <span id="activity-state" class="badge">Ready</span>
       </div>
-      <p class="activity-note">Roles run sequentially using the local model and tools. Each card shows the recorded action and its operational reason.</p>
+      <p class="activity-note">Roles run sequentially using the configured models and tools. Each card shows the recorded action and its operational reason.</p>
       <div id="agents" class="agents"></div>
     </section>
     <section class="metrics" aria-label="Routes in this tab">

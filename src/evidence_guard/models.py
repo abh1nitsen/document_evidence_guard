@@ -59,7 +59,7 @@ def chat(
         body["reasoning_effort"] = "low"
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "drishti-evidence-guard/0.4.0",
+        "User-Agent": "drishti-evidence-guard/0.6.0",
     }
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -133,10 +133,12 @@ class LocalModel:
                 }
             ]
         self.last_usage = None
+        self.last_response = None
         kwargs = {"schema": schema}
         if max_output_tokens is not None:
             kwargs["max_output_tokens"] = max_output_tokens
         result = chat(self.endpoint, self.model, messages, timeout, **kwargs)
+        self.last_response = result.content
         usage = result.usage if isinstance(result.usage, dict) else {}
         self.last_usage = {
             "prompt_tokens": usage.get("prompt_tokens"),
